@@ -110,6 +110,51 @@ final class SomaClientTests: XCTestCase {
         XCTAssertNil(SomaClient.pickPlaylist(from: [], quality: .aacHighest))
     }
 
+    // MARK: - StreamInfo parsing
+
+    private func stream(_ serverURLs: [String]) -> ResolvedStream {
+        ResolvedStream(
+            playlistURL: URL(string: "https://api.somafm.com/x.pls")!,
+            servers: serverURLs.map { URL(string: $0)! }
+        )
+    }
+
+    func testStreamInfoParsesBitrateAndCodec() {
+        XCTAssertEqual(
+            stream(["https://ice6.somafm.com/groovesalad-256-mp3"]).streamInfo,
+            ResolvedStream.StreamInfo(kbps: 256, codec: "MP3")
+        )
+        XCTAssertEqual(
+            stream(["https://ice2.somafm.com/cliqhop-128-aac"]).streamInfo,
+            ResolvedStream.StreamInfo(kbps: 128, codec: "AAC")
+        )
+        XCTAssertEqual(
+            stream(["https://ice5.somafm.com/groovesalad-32-aac"]).streamInfo,
+            ResolvedStream.StreamInfo(kbps: 32, codec: "AAC")
+        )
+    }
+
+    func testStreamInfoHandlesDashesInChannelName() {
+        XCTAssertEqual(
+            stream(["https://ice6.somafm.com/deep-space-one-128-aac"]).streamInfo,
+            ResolvedStream.StreamInfo(kbps: 128, codec: "AAC")
+        )
+    }
+
+    func testStreamInfoNilOnUnparseableURLs() {
+        XCTAssertNil(stream(["https://ice6.somafm.com/live"]).streamInfo)
+        XCTAssertNil(stream(["https://ice6.somafm.com/x-abc-mp3"]).streamInfo)
+        XCTAssertNil(stream(["https://ice6.somafm.com/x-128-ogg"]).streamInfo)
+        XCTAssertNil(stream([]).streamInfo)
+    }
+
+    func testStreamInfoDisplayText() {
+        XCTAssertEqual(
+            ResolvedStream.StreamInfo(kbps: 256, codec: "MP3").displayText,
+            "256 kbps MP3"
+        )
+    }
+
     // MARK: - https forcing
 
     func testHTTPSURLForcesScheme() {

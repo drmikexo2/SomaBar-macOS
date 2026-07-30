@@ -15,7 +15,7 @@ enum StreamQuality: String, CaseIterable, Identifiable, Codable {
 
     var displayName: String {
         switch self {
-        case .mp3Highest: "MP3 (highest)"
+        case .mp3Highest: "MP3 128–320k (varies by channel)"
         case .aacHighest: "128k AAC"
         case .aacpHigh: "64k AAC+"
         case .aacpLow: "32k AAC+"
@@ -164,6 +164,31 @@ struct SongsResponse: Codable {
 struct ResolvedStream: Equatable {
     let playlistURL: URL
     let servers: [URL]
+
+    /// The actual bitrate and codec being played, parsed from the server URL
+    /// (`{channel}-{kbps}-{codec}`, e.g. "groovesalad-256-mp3"). This is the
+    /// only honest source: the quality *tier* hides that SomaFM's MP3
+    /// "highest" varies per channel (128k on most, 256/320k on flagships),
+    /// and the .pls filename suffix lies (groovesalad130.pls serves 128k).
+    struct StreamInfo: Equatable {
+        let kbps: Int
+        let codec: String
+
+        var displayText: String { "\(kbps) kbps \(codec)" }
+    }
+
+    var streamInfo: StreamInfo? {
+        guard let name = servers.first?.lastPathComponent else { return nil }
+        let parts = name.split(separator: "-")
+        guard parts.count >= 3, let kbps = Int(parts[parts.count - 2]) else { return nil }
+        let codec: String
+        switch parts.last?.lowercased() {
+        case "mp3": codec = "MP3"
+        case "aac", "aacp": codec = "AAC"
+        default: return nil
+        }
+        return StreamInfo(kbps: kbps, codec: codec)
+    }
 }
 
 // MARK: - Track / Now Playing

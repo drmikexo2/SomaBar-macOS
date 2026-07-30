@@ -163,9 +163,19 @@ struct PlayerControlsView: View {
 
     @ViewBuilder
     private func channelLine(track: NowPlaying) -> some View {
-        Text(track.channelName)
-            .font(.system(size: 12, weight: .semibold))
-            .lineLimit(1)
+        HStack(spacing: 6) {
+            Text(track.channelName)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            if let info = player.currentStreamInfo {
+                Text(info.displayText)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
+                    .help("Actual stream quality. SomaFM's MP3 (highest) tier varies by channel; the 64k/32k AAC+ tiers use HE-AAC, which can sound artificial in the treble.")
+            }
+        }
     }
 
     private func toggleArtworkExpansion() {

@@ -30,6 +30,8 @@ final class AudioPlayer {
     var onPreviousTrack: (() -> Void)?
     var playbackError: String?
     var currentChannel: Channel?
+    /// Actual bitrate/codec of the playing stream, for the popover caption.
+    private(set) var currentStreamInfo: ResolvedStream.StreamInfo?
     var currentTrack: NowPlaying?
     var currentArtImage: NSImage?
     var currentTrackIdentityToken: String?
@@ -177,6 +179,7 @@ final class AudioPlayer {
         phase = .buffering
 
         currentChannel = channel
+        currentStreamInfo = stream.streamInfo
         isPlaying = true
         currentTrackIdentityToken = nil
 
@@ -276,6 +279,7 @@ final class AudioPlayer {
         isPlaying = false
         playbackError = nil
         currentChannel = nil
+        currentStreamInfo = nil
         currentTrack = nil
         currentArtImage = nil
         currentTrackIdentityToken = nil
