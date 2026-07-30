@@ -38,6 +38,10 @@ struct MenuBarView: View {
             HoverTextButton(title: "History…") {
                 onOpenHistory()
             }
+            HoverTextButton(title: "Donate", systemImage: "heart.fill", tint: .pink) {
+                openURL(SomaFM.supportURL)
+            }
+            .help("Support SomaFM — they're 100% listener-funded")
             Spacer()
             HoverTextButton(title: "Quit") {
                 NSApp.terminate(nil)
@@ -128,17 +132,26 @@ private struct UpdateStatusBanner: View {
 /// secondary→primary brightening on hover (tinted variants keep their color).
 struct HoverTextButton: View {
     let title: String
+    var systemImage: String? = nil
     var tint: Color? = nil
     let action: () -> Void
     @State private var isHovered = false
 
     var body: some View {
-        Button(title, action: action)
-            .buttonStyle(.plain)
-            .font(.system(size: 11))
-            .foregroundStyle(currentStyle)
-            .onHover { isHovered = $0 }
-            .cursor(.pointingHand)
+        Button(action: action) {
+            HStack(spacing: 3) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 9))
+                }
+                Text(title)
+            }
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 11))
+        .foregroundStyle(currentStyle)
+        .onHover { isHovered = $0 }
+        .cursor(.pointingHand)
     }
 
     private var currentStyle: AnyShapeStyle {

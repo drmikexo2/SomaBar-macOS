@@ -12,7 +12,10 @@ struct SettingsWindowView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Image(nsImage: NSApp.applicationIconImage)
+                // Load from the asset catalog, not NSApp.applicationIconImage:
+                // macOS icon-services caches by bundle path and can serve a
+                // stale icon after the assets change.
+                Image(nsImage: NSImage(named: "AppIcon") ?? NSApp.applicationIconImage)
                     .resizable()
                     .frame(width: 28, height: 28)
                 VStack(alignment: .leading, spacing: 1) {
@@ -147,27 +150,33 @@ struct SettingsWindowView: View {
             Button {
                 openURL(SomaFM.supportURL)
             } label: {
-                HStack(spacing: 8) {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "heart.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.pink)
+                        .padding(.top, 1)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Support SomaFM")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                        Text("SomaFM is commercial-free and 100% listener-supported")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("SomaFM is commercial-free and 100% listener-supported. If you enjoy the music, please help keep it on the air.")
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer()
-                    Image(systemName: "heart")
+                    Image(systemName: "arrow.up.right.square")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
-                .contentShape(Rectangle())
+                .padding(10)
+                .background(.pink.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                .contentShape(RoundedRectangle(cornerRadius: 8))
             }
             .buttonStyle(.plain)
             .cursor(.pointingHand)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
         }
         .frame(width: 320)
         .task {
