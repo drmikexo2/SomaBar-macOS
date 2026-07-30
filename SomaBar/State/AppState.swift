@@ -290,10 +290,7 @@ final class AppState {
         Task { [weak self] in
             do {
                 let stream = try await SomaClient.resolveStream(channel: channel, quality: quality)
-                guard let self else { return }
-                self.audioPlayer.play(channel: channel, stream: stream) {
-                    try await SomaClient.resolveStream(channel: channel, quality: quality)
-                }
+                self?.audioPlayer.play(channel: channel, stream: stream)
             } catch {
                 self?.errorMessage = error.localizedDescription
                 log.error("playChannel resolve failed: \(error.localizedDescription)")

@@ -57,12 +57,11 @@ final class AudioPlayer {
     private var audibleStartedAt: Date?
     private var enrichmentTask: Task<Void, Never>?
 
-    // Reconnect state. The stream servers are load-balancer assignments, not
-    // stable hosts: each reconnect attempt rotates to the next server in the
-    // resolved playlist, and a full unsuccessful cycle (or a wake/path change)
-    // re-resolves the .pls for a fresh assignment.
-    private var lastPlayArgs: (channel: Channel, stream: ResolvedStream, resolve: () async throws -> ResolvedStream)?
-    private var serverIndex = 0
+    // Reconnect state. AVPlayer is handed the .pls playlist URL, not a direct
+    // ice-server URL: AVFoundation's playlist path is the only one that
+    // surfaces ICY timed metadata, and re-fetching the .pls on every restart
+    // picks up fresh load-balancer server assignments for free.
+    private var lastPlayArgs: (channel: Channel, stream: ResolvedStream)?
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttempt = 0
     private var hasPlayedThisSession = false
@@ -82,22 +81,16 @@ final class AudioPlayer {
 
     // MARK: - Playback
 
-    /// Starts a channel from a resolved stream. `resolve` re-fetches the .pls
-    /// when the current server assignments go stale (reconnect cycle, wake).
-    func play(
-        channel: Channel,
-        stream: ResolvedStream,
-        resolve: @escaping () async throws -> ResolvedStream
-    ) {
+    /// Starts a channel from a resolved stream.
+    func play(channel: Channel, stream: ResolvedStream) {
         // A user-initiated play resets recovery; a retry from the reconnect
         // loop must not cancel the loop that issued it.
         if !isReconnectRestart {
             cancelReconnect()
             reconnectAttempt = 0
             autoResumeOnNetworkReturn = false
-            serverIndex = 0
         }
-        lastPlayArgs = (channel, stream, resolve)
+        lastPlayArgs = (channel, stream)
         hasPlayedThisSession = false
         pausedAt = nil
         pauseTeardownTimer?.invalidate()
@@ -137,11 +130,13 @@ final class AudioPlayer {
         lastIcyStreamTitle = nil
         audibleStartedAt = nil
 
-        let streamURL = stream.servers[min(serverIndex, stream.servers.count - 1)]
-        // The User-Agent matters: SomaFM's Icecast edge drops anonymous
-        // clients, and the identifying UA is part of polite unofficial use.
+        // Play the .pls itself — AVFoundation's playlist handling is what
+        // delivers ICY StreamTitle metadata (a direct ice URL plays silent of
+        // metadata), and each restart re-fetches it for fresh servers. The
+        // User-Agent matters: SomaFM drops anonymous clients, and the
+        // identifying UA is part of polite unofficial use.
         let asset = AVURLAsset(
-            url: streamURL,
+            url: stream.playlistURL,
             options: ["AVURLAssetHTTPHeaderFieldsKey": [
                 "Icy-MetaData": "1",
                 "User-Agent": SomaClient.userAgent,
@@ -176,7 +171,7 @@ final class AudioPlayer {
         ]
         installMetadataOutput(on: item, channel: channel, sessionID: sessionID)
 
-        log.info("startStream: \(channel.name, privacy: .public) via \(streamURL.host ?? "?", privacy: .public)")
+        log.info("startStream: \(channel.name, privacy: .public) via \(stream.playlistURL.lastPathComponent, privacy: .public)")
         player?.replaceCurrentItem(with: item)
         player?.play()
         phase = .buffering
@@ -241,12 +236,10 @@ final class AudioPlayer {
         // A live buffer paused for long (or a dead item) is stale or badly
         // behind — restart the stream instead of resuming into silence.
         // (Past 60s the item may already be gone via tearDownPausedStream.)
-        // Restarts re-resolve the .pls first: server assignments have likely
-        // rotated while paused, falling back to the cached ones.
         let pausedTooLong = pausedAt.map { Date().timeIntervalSince($0) > 60 } ?? false
-        if lastPlayArgs != nil,
+        if let args = lastPlayArgs,
            pausedTooLong || player?.currentItem == nil || player?.currentItem?.status == .failed {
-            restartWithFreshStream()
+            play(channel: args.channel, stream: args.stream)
             return
         }
         pausedAt = nil
@@ -265,7 +258,6 @@ final class AudioPlayer {
         reconnectAttempt = 0
         autoResumeOnNetworkReturn = false
         lastPlayArgs = nil
-        serverIndex = 0
         lastItemError = nil
         pausedAt = nil
         pauseTeardownTimer?.invalidate()
@@ -371,23 +363,10 @@ final class AudioPlayer {
             phase = .reconnecting(attempt: reconnectAttempt)
             log.debug("RECONNECT: attempt \(self.reconnectAttempt, privacy: .public)/\(maxAttempts, privacy: .public) in \(delay, privacy: .public)s")
             try? await Task.sleep(for: .seconds(delay))
-            guard !Task.isCancelled, isPlaying, var args = lastPlayArgs else { return }
-
-            // Rotate to the next redundant server; after a full unsuccessful
-            // cycle, re-resolve the .pls for a fresh server assignment.
-            serverIndex += 1
-            if serverIndex >= args.stream.servers.count {
-                serverIndex = 0
-                if let fresh = try? await args.resolve() {
-                    args = (args.channel, fresh, args.resolve)
-                    lastPlayArgs = args
-                    log.debug("RECONNECT: re-resolved playlist (\(fresh.servers.count, privacy: .public) servers)")
-                }
-                guard !Task.isCancelled, isPlaying else { return }
-            }
+            guard !Task.isCancelled, isPlaying, let args = lastPlayArgs else { return }
 
             isReconnectRestart = true
-            play(channel: args.channel, stream: args.stream, resolve: args.resolve)
+            play(channel: args.channel, stream: args.stream)
             isReconnectRestart = false
             phase = .reconnecting(attempt: reconnectAttempt)
 
@@ -417,40 +396,26 @@ final class AudioPlayer {
         return false
     }
 
-    /// Restart from a freshly resolved .pls, falling back to the cached
-    /// resolution if the fetch fails. Used after wake/path changes, where the
-    /// old server assignment is stale by definition.
-    private func restartWithFreshStream() {
-        guard let args = lastPlayArgs else { return }
-        cancelReconnect()
-        reconnectAttempt = 0
-        serverIndex = 0
-        Task { [weak self] in
-            let stream = (try? await args.resolve()) ?? args.stream
-            guard let self, self.lastPlayArgs != nil else { return }
-            self.lastPlayArgs = (args.channel, stream, args.resolve)
-            self.play(channel: args.channel, stream: stream, resolve: args.resolve)
-        }
-    }
-
     /// Called by PlaybackRecovery when the network path becomes satisfied.
     func networkPathRestored() {
         if isPlaying, isRecovering {
             reconnectAttempt = 0
             cancelReconnect()
             beginReconnect()
-        } else if phase == .failed, autoResumeOnNetworkReturn, lastPlayArgs != nil {
+        } else if phase == .failed, autoResumeOnNetworkReturn, let args = lastPlayArgs {
             autoResumeOnNetworkReturn = false
-            isPlaying = true
-            restartWithFreshStream()
+            play(channel: args.channel, stream: args.stream)
         }
     }
 
     /// Called by PlaybackRecovery after system wake if playback was active.
-    /// A slept live-stream item is never trustworthy — always restart.
+    /// A slept live-stream item is never trustworthy — always restart (the
+    /// .pls re-fetch picks up a fresh server assignment).
     func restartAfterWake() {
-        guard isPlaying, lastPlayArgs != nil else { return }
-        restartWithFreshStream()
+        guard isPlaying, let args = lastPlayArgs else { return }
+        cancelReconnect()
+        reconnectAttempt = 0
+        play(channel: args.channel, stream: args.stream)
     }
 
     private func removeItemNotificationObservers() {
