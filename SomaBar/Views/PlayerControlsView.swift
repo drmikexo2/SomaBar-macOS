@@ -161,26 +161,11 @@ struct PlayerControlsView: View {
         }
     }
 
-    /// "Network · Channel"; when browsing a different network than the one
-    /// playing, tapping it jumps back to the playing network's station list.
     @ViewBuilder
     private func channelLine(track: NowPlaying) -> some View {
-        let network = player.currentNetwork
-        let label = network.map { "\($0.displayName) · \(track.channelName)" } ?? track.channelName
-        // In All-Sites mode the playing channel is already on screen, and the
-        // jump would drop the user out of All mode — plain text instead.
-        if let network, !appState.allNetworksSelected, network != appState.selectedNetwork {
-            Text(label)
-                .font(.system(size: 12, weight: .semibold))
-                .lineLimit(1)
-                .onTapGesture { appState.selectNetwork(network) }
-                .cursor(.pointingHand)
-                .help("Show \(network.displayName) channels")
-        } else {
-            Text(label)
-                .font(.system(size: 12, weight: .semibold))
-                .lineLimit(1)
-        }
+        Text(track.channelName)
+            .font(.system(size: 12, weight: .semibold))
+            .lineLimit(1)
     }
 
     private func toggleArtworkExpansion() {
@@ -210,49 +195,29 @@ struct TrackMetaRow: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            // Votes — interactive when the track is identified
-            if track.trackId != nil {
+            // Votes — local-only ratings (SomaFM has no voting API), shown
+            // once the track is identified.
+            if hasSongMetadata {
                 let myVote = appState.currentTrackVote
 
                 Button(action: { appState.voteCurrentTrack(up: true) }) {
-                    HStack(spacing: 2) {
-                        Image(systemName: myVote == 1 ? "hand.thumbsup.fill" : "hand.thumbsup")
-                        // Count includes the user's own vote for instant feedback
-                        Text("\(track.upVotes + (myVote == 1 ? 1 : 0))")
-                    }
-                    .foregroundStyle(.green.opacity(myVote == 1 ? 1.0 : 0.7))
-                    .contentShape(Rectangle())
+                    Image(systemName: myVote == 1 ? "hand.thumbsup.fill" : "hand.thumbsup")
+                        .foregroundStyle(.green.opacity(myVote == 1 ? 1.0 : 0.7))
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .cursor(.pointingHand)
                 .help(myVote == 1 ? "Remove your like" : "Like this song")
 
                 Button(action: { appState.voteCurrentTrack(up: false) }) {
-                    HStack(spacing: 2) {
-                        Image(systemName: myVote == -1 ? "hand.thumbsdown.fill" : "hand.thumbsdown")
-                        Text("\(track.downVotes + (myVote == -1 ? 1 : 0))")
-                    }
-                    .foregroundStyle(.red.opacity(myVote == -1 ? 0.9 : 0.55))
-                    .contentShape(Rectangle())
+                    Image(systemName: myVote == -1 ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+                        .foregroundStyle(.red.opacity(myVote == -1 ? 0.9 : 0.55))
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .cursor(.pointingHand)
                 .help(myVote == -1 ? "Remove your dislike" : "Dislike this song")
-            } else if track.upVotes > 0 || track.downVotes > 0 {
-                HStack(spacing: 2) {
-                    Image(systemName: "hand.thumbsup.fill")
-                    Text("\(track.upVotes)")
-                }
-                .foregroundStyle(.green.opacity(0.8))
 
-                HStack(spacing: 2) {
-                    Image(systemName: "hand.thumbsdown.fill")
-                    Text("\(track.downVotes)")
-                }
-                .foregroundStyle(.red.opacity(0.6))
-            }
-
-            if hasSongMetadata {
                 SongActionsButton(artist: track.artist, title: track.title)
             }
 
@@ -283,7 +248,7 @@ struct TrackMetaRow: View {
         }
         .font(.system(size: 10))
         .onAppear { appState.refreshCurrentTrackVote() }
-        .onChange(of: track.trackId) { _, _ in
+        .onChange(of: "\(track.artist)|\(track.title)") { _, _ in
             appState.refreshCurrentTrackVote()
         }
     }

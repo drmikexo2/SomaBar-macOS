@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-/// Recently played stations, most recent first, across all networks —
+/// Recently played stations, most recent first —
 /// a small MRU list persisted as JSON in Prefs.
 @Observable
 @MainActor
@@ -17,12 +17,9 @@ final class RecentStationsStore {
         entries = decoded
     }
 
-    func record(_ channel: Channel, network: Network) {
-        let entry = RecentStation(
-            network: network, channelId: channel.id,
-            channelKey: channel.key, name: channel.name
-        )
-        entries.removeAll { $0.network == network && $0.channelId == channel.id }
+    func record(_ channel: Channel) {
+        let entry = RecentStation(channelId: channel.id, name: channel.name)
+        entries.removeAll { $0.channelId == channel.id }
         entries.insert(entry, at: 0)
         if entries.count > Self.limit {
             entries.removeLast(entries.count - Self.limit)
@@ -30,7 +27,7 @@ final class RecentStationsStore {
         persist()
     }
 
-    /// Drops a stale entry (station no longer on its network).
+    /// Drops a stale entry (station no longer in the channel list).
     func remove(id: String) {
         entries.removeAll { $0.id == id }
         persist()

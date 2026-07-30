@@ -118,19 +118,21 @@ final class Scrobbler {
             artist: currentArtist,
             title: currentTitle,
             duration: currentDuration > 0 ? currentDuration : nil,
-            network: "",
+            network: SomaFM.networkTag,
             channelName: ""
         )
         log.info("queued scrobble: \(self.currentArtist, privacy: .public) – \(self.currentTitle, privacy: .public)")
         flush()
     }
 
-    /// Jingles and ads: no artist (ICY jingles come through title-only), the
-    /// artist matching the station branding, or obvious ad/URL patterns.
+    /// Jingles and station IDs: no artist (ICY breaks come through
+    /// title-only), the artist matching the station branding, or obvious
+    /// promo/URL patterns. SomaFM's breaks identify as "SomaFM" or carry
+    /// listener-support messaging.
     private func isScrobblable(artist: String, title: String) -> Bool {
         guard !artist.isEmpty, !title.isEmpty, title != "Loading..." else { return false }
         let combined = "\(artist) \(title)".lowercased()
-        let adPatterns = ["advert", "jingle", "di.fm", "radiotunes", "jazzradio", "rockradio", "zenradio", "classicalradio", ".com/"]
+        let adPatterns = ["advert", "jingle", "somafm", "soma fm", "station id", "listener-supported", ".com/"]
         return !adPatterns.contains { combined.contains($0) }
     }
 

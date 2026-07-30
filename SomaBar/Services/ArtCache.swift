@@ -65,7 +65,9 @@ enum ArtCache {
         if let hit = cached(url) { return hit }
         if let pending = inflight[url] { return await pending.value }
         let task = Task { () -> NSImage? in
-            guard let (data, _) = try? await session.data(from: url),
+            // SomaClient's identifying User-Agent: the logos live on SomaFM's
+            // hosts, which drop anonymous clients.
+            guard let (data, _) = try? await session.data(for: SomaClient.request(url)),
                   let image = NSImage(data: data)
             else { return nil }
             cache.setObject(

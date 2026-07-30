@@ -11,30 +11,16 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(NowPlaying.formatTime(600), "10:00")
     }
 
-    // MARK: - TrackArt
+    // MARK: - TrackArt (URL passthrough)
 
-    func testStoragePathStripsCdnHost() {
-        let url = URL(string: "https://cdn-images.audioaddict.com/8/f/a/cover.jpg")!
-        XCTAssertEqual(TrackArt.storagePath(from: url), "/8/f/a/cover.jpg")
+    func testStoragePathIsFullURL() {
+        let url = URL(string: "https://api.somafm.com/logos/256/groovesalad256.png")!
+        XCTAssertEqual(TrackArt.storagePath(from: url), url.absoluteString)
     }
 
-    func testStoragePathKeepsForeignHostsInFull() {
-        let url = URL(string: "https://example.com/art.jpg")!
-        XCTAssertEqual(TrackArt.storagePath(from: url), "https://example.com/art.jpg")
-    }
-
-    func testUrlFromStoredPathRestoresCdnHost() {
-        XCTAssertEqual(
-            TrackArt.url(fromStored: "/8/f/a/cover.jpg")?.absoluteString,
-            "https://cdn-images.audioaddict.com/8/f/a/cover.jpg"
-        )
-    }
-
-    func testUrlFromStoredFullURLPassesThrough() {
-        XCTAssertEqual(
-            TrackArt.url(fromStored: "https://example.com/art.jpg")?.absoluteString,
-            "https://example.com/art.jpg"
-        )
+    func testUrlFromStoredRoundTrips() {
+        let original = URL(string: "https://api.somafm.com/logos/256/groovesalad256.png")!
+        XCTAssertEqual(TrackArt.url(fromStored: TrackArt.storagePath(from: original)), original)
     }
 
     func testUrlFromStoredEmptyIsNil() {
@@ -42,93 +28,131 @@ final class ModelsTests: XCTestCase {
         XCTAssertNil(TrackArt.url(fromStored: ""))
     }
 
-    func testStorageRoundTrip() {
-        let original = URL(string: "https://cdn-images.audioaddict.com/8/f/a/cover.jpg")!
-        let stored = TrackArt.storagePath(from: original)
-        XCTAssertEqual(TrackArt.url(fromStored: stored), original)
+    // MARK: - Channel decoding (channels.json)
+
+    /// Trimmed from the live feed. The critical quirk: every scalar is a JSON
+    /// string, including listeners and updated.
+    private static let channelJSON = Data("""
+    {"channels": [
+      {
+        "id": "groovesalad",
+        "title": "Groove Salad",
+        "description": "A nicely chilled plate of ambient/downtempo beats and grooves.",
+        "dj": "Rusty Hodge",
+        "djmail": "rusty@somafm.com",
+        "genre": "ambient|electronic",
+        "image": "https://api.somafm.com/logos/120/groovesalad120.png",
+        "largeimage": "https://api.somafm.com/logos/256/groovesalad256.png",
+        "xlimage": "https://api.somafm.com/logos/512/groovesalad512.png",
+        "twitter": "",
+        "updated": "1780812672",
+        "playlists": [
+          { "url": "https://api.somafm.com/groovesalad256.pls", "format": "mp3", "quality": "highest" },
+          { "url": "https://api.somafm.com/groovesalad130.pls", "format": "aac", "quality": "highest" },
+          { "url": "https://api.somafm.com/groovesalad64.pls", "format": "aacp", "quality": "high" },
+          { "url": "https://api.somafm.com/groovesalad32.pls", "format": "aacp", "quality": "low" }
+        ],
+        "preroll": [],
+        "listeners": "1971",
+        "lastPlaying": "Thomas Lemmer & Andreas Bach - Deep Ocean"
+      },
+      {
+        "id": "minimal",
+        "title": "Minimal Channel",
+        "description": "",
+        "dj": "",
+        "djmail": "",
+        "genre": "ambient",
+        "image": "https://api.somafm.com/logos/120/minimal120.jpg",
+        "largeimage": "",
+        "xlimage": "",
+        "twitter": "",
+        "updated": "1674955401",
+        "playlists": [
+          { "url": "https://api.somafm.com/minimal.pls", "format": "mp3", "quality": "highest" }
+        ],
+        "preroll": [],
+        "listeners": "0",
+        "lastPlaying": "",
+        "featured": "2"
+      }
+    ]}
+    """.utf8)
+
+    func testChannelDecodingHandlesStringScalars() throws {
+        let decoded = try JSONDecoder().decode(ChannelsResponse.self, from: Self.channelJSON)
+        XCTAssertEqual(decoded.channels.count, 2)
+
+        let groove = decoded.channels[0]
+        XCTAssertEqual(groove.id, "groovesalad")
+        XCTAssertEqual(groove.name, "Groove Salad")
+        XCTAssertEqual(groove.key, "groovesalad")
+        XCTAssertEqual(groove.listenerCount, 1971)
+        XCTAssertEqual(groove.genres, ["ambient", "electronic"])
+        XCTAssertEqual(groove.playlists.count, 4)
+        XCTAssertEqual(groove.playlists[0].format, "mp3")
+        XCTAssertEqual(groove.playlists[0].quality, "highest")
     }
 
-    func testThumbnailURLAddsSizeQuery() {
-        let url = URL(string: "https://cdn-images.audioaddict.com/8/f/a/cover.jpg")!
+    func testChannelLogoURLPrefersLargeImage() throws {
+        let decoded = try JSONDecoder().decode(ChannelsResponse.self, from: Self.channelJSON)
         XCTAssertEqual(
-            TrackArt.thumbnailURL(url, pixelSize: 64)?.absoluteString,
-            "https://cdn-images.audioaddict.com/8/f/a/cover.jpg?size=64x64"
+            decoded.channels[0].logoURL?.absoluteString,
+            "https://api.somafm.com/logos/256/groovesalad256.png"
         )
-    }
-
-    func testThumbnailURLReplacesExistingQuery() {
-        let url = URL(string: "https://cdn-images.audioaddict.com/cover.jpg?size=300x300")!
         XCTAssertEqual(
-            TrackArt.thumbnailURL(url, pixelSize: 64)?.absoluteString,
-            "https://cdn-images.audioaddict.com/cover.jpg?size=64x64"
+            decoded.channels[0].xlLogoURL?.absoluteString,
+            "https://api.somafm.com/logos/512/groovesalad512.png"
         )
     }
 
-    // MARK: - AuthResponse email
-
-    func testAuthResponseDecodesTopLevelEmail() throws {
-        let json = Data("""
-        {"listen_key": "abc", "email": "user@example.com"}
-        """.utf8)
-        let response = try JSONDecoder().decode(AuthResponse.self, from: json)
-        XCTAssertEqual(response.resolvedEmail, "user@example.com")
-    }
-
-    func testAuthResponseFallsBackToMemberEmail() throws {
-        let json = Data("""
-        {"listen_key": "abc", "member": {"id": 1, "email": "member@example.com"}}
-        """.utf8)
-        let response = try JSONDecoder().decode(AuthResponse.self, from: json)
-        XCTAssertEqual(response.resolvedEmail, "member@example.com")
-    }
-
-    func testAuthResponseEmailMissingIsNil() throws {
-        let json = Data("""
-        {"listen_key": "abc"}
-        """.utf8)
-        let response = try JSONDecoder().decode(AuthResponse.self, from: json)
-        XCTAssertNil(response.resolvedEmail)
-    }
-
-    // MARK: - MembershipSubscription dates
-
-    private func subscription(
-        expiresOn: String? = nil,
-        firstTrialAt: String? = nil,
-        createdAt: String? = nil
-    ) -> MembershipSubscription {
-        MembershipSubscription(
-            status: "active", autoRenew: true, trial: false,
-            expiresOn: expiresOn, firstTrialAt: firstTrialAt,
-            createdAt: createdAt, networkId: 1
+    func testChannelLogoURLFallsBackWhenLargerSizesEmpty() throws {
+        let decoded = try JSONDecoder().decode(ChannelsResponse.self, from: Self.channelJSON)
+        // largeimage/xlimage are "" — empty strings make no URL, so the
+        // 120px image is the fallback.
+        XCTAssertEqual(
+            decoded.channels[1].logoURL?.absoluteString,
+            "https://api.somafm.com/logos/120/minimal120.jpg"
         )
     }
 
-    func testExpiresOnParsesDateOnly() {
-        let date = subscription(expiresOn: "2026-01-31").expiresOnDate
-        XCTAssertNotNil(date)
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let parts = calendar.dateComponents([.year, .month, .day], from: date!)
-        XCTAssertEqual(parts.year, 2026)
-        XCTAssertEqual(parts.month, 1)
-        XCTAssertEqual(parts.day, 31)
+    func testChannelEqualityIsById() throws {
+        let decoded = try JSONDecoder().decode(ChannelsResponse.self, from: Self.channelJSON)
+        XCTAssertEqual(decoded.channels[0], decoded.channels[0])
+        XCTAssertNotEqual(decoded.channels[0], decoded.channels[1])
     }
 
-    func testInternetDateParsesWithAndWithoutFractionalSeconds() {
-        XCTAssertNotNil(subscription(firstTrialAt: "2025-06-01T12:34:56.789Z").firstTrialDate)
-        XCTAssertNotNil(subscription(firstTrialAt: "2025-06-01T12:34:56Z").firstTrialDate)
-        XCTAssertNil(subscription(firstTrialAt: "not a date").firstTrialDate)
+    // MARK: - Songs decoding (songs/{id}.json)
+
+    func testSongsResponseDecoding() throws {
+        let json = Data("""
+        {"id": "groovesalad", "songs": [
+          {"title": "From Zen To Fit", "artist": "Trestal", "album": "Chillville",
+           "albumArt": "", "date": "1785444534"},
+          {"title": "Dope", "artist": "Kruder & Dorfmeister", "album": "",
+           "albumArt": "", "date": "1785442911"}
+        ]}
+        """.utf8)
+        let decoded = try JSONDecoder().decode(SongsResponse.self, from: json)
+        XCTAssertEqual(decoded.songs.count, 2)
+        XCTAssertEqual(decoded.songs[0].artist, "Trestal")
+        XCTAssertEqual(decoded.songs[0].album, "Chillville")
+        XCTAssertEqual(decoded.songs[0].date, "1785444534")
     }
 
-    func testStartedDatePrefersFirstTrial() {
-        let both = subscription(
-            firstTrialAt: "2025-06-01T00:00:00Z",
-            createdAt: "2025-07-01T00:00:00Z"
-        )
-        XCTAssertEqual(both.startedDate, both.firstTrialDate)
+    // MARK: - StreamQuality
 
-        let createdOnly = subscription(createdAt: "2025-07-01T00:00:00Z")
-        XCTAssertEqual(createdOnly.startedDate, createdOnly.createdAtDate)
+    func testStreamQualityMatchesPlaylists() {
+        let mp3 = Channel.Playlist(url: "https://api.somafm.com/x256.pls", format: "mp3", quality: "highest")
+        let aac = Channel.Playlist(url: "https://api.somafm.com/x130.pls", format: "aac", quality: "highest")
+        let aacpHigh = Channel.Playlist(url: "https://api.somafm.com/x64.pls", format: "aacp", quality: "high")
+        let aacpLow = Channel.Playlist(url: "https://api.somafm.com/x32.pls", format: "aacp", quality: "low")
+
+        XCTAssertTrue(StreamQuality.mp3Highest.matches(mp3))
+        XCTAssertTrue(StreamQuality.aacHighest.matches(aac))
+        XCTAssertTrue(StreamQuality.aacpHigh.matches(aacpHigh))
+        XCTAssertTrue(StreamQuality.aacpLow.matches(aacpLow))
+        XCTAssertFalse(StreamQuality.mp3Highest.matches(aac))
+        XCTAssertFalse(StreamQuality.aacHighest.matches(aacpHigh))
     }
 }

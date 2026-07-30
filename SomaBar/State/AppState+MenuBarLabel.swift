@@ -3,14 +3,11 @@ import Foundation
 /// Menu-bar label composition: which components show is governed by the
 /// toggles stored on AppState; this file owns how they join and truncate.
 extension AppState {
-    /// "Site · Station" for the menu bar, per the component toggles; nil when
-    /// idle or nothing is selected for this line.
+    /// Station name for the menu bar, per the component toggle; nil when
+    /// idle or the station component is off.
     var menuBarLine1: String? {
         guard audioPlayer.isPlaying else { return nil }
-        return composedLine1(
-            site: audioPlayer.currentNetwork?.displayName,
-            station: audioPlayer.currentChannel?.name
-        )
+        return composedLine1(station: audioPlayer.currentChannel?.name)
     }
 
     /// "Artist – Song" for the menu bar, per the component toggles.
@@ -23,8 +20,7 @@ extension AppState {
     /// placeholder examples otherwise. Same joining logic as the real label.
     var menuBarPreviewLine1: String? {
         composedLine1(
-            site: audioPlayer.isPlaying ? audioPlayer.currentNetwork?.displayName : "Jazz Radio",
-            station: audioPlayer.isPlaying ? audioPlayer.currentChannel?.name : "Ambient"
+            station: audioPlayer.isPlaying ? audioPlayer.currentChannel?.name : "Groove Salad"
         )
     }
 
@@ -32,19 +28,12 @@ extension AppState {
         if audioPlayer.isPlaying, let track = audioPlayer.currentTrack {
             return composedLine2(artist: track.artist, song: track.title)
         }
-        return composedLine2(artist: "Metallica", song: "So What")
+        return composedLine2(artist: "Boards of Canada", song: "Roygbiv")
     }
 
-    private func composedLine1(site: String?, station: String?) -> String? {
-        var parts: [String] = []
-        if menuBarShowSite, let site, !site.isEmpty {
-            parts.append(site)
-        }
-        if menuBarShowStation, let station, !station.isEmpty {
-            parts.append(station)
-        }
-        guard !parts.isEmpty else { return nil }
-        return Self.truncateForMenuBar(parts.joined(separator: " · "))
+    private func composedLine1(station: String?) -> String? {
+        guard menuBarShowStation, let station, !station.isEmpty else { return nil }
+        return Self.truncateForMenuBar(station)
     }
 
     private func composedLine2(artist: String?, song: String?) -> String? {

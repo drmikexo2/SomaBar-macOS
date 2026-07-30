@@ -7,7 +7,6 @@ struct SettingsWindowView: View {
     @Environment(\.openURL) private var openURL
     @State private var launchAtLogin: Bool?
     @State private var isUpdatingLaunchAtLogin = false
-    @State private var showLogoutConfirmation = false
     var onCheckForUpdates: () -> Void = {}
 
     var body: some View {
@@ -44,7 +43,6 @@ struct SettingsWindowView: View {
             settingsRow("Menu bar") {
                 HStack(spacing: 4) {
                     ToggleChip(title: "play/pause", systemImage: "playpause.fill", isOn: Bindable(appState).menuBarShowPlayState)
-                    ToggleChip(title: "Site", isOn: Bindable(appState).menuBarShowSite)
                     ToggleChip(title: "Channel", isOn: Bindable(appState).menuBarShowStation)
                     ToggleChip(title: "Artist", isOn: Bindable(appState).menuBarShowArtist)
                     ToggleChip(title: "Song", isOn: Bindable(appState).menuBarShowSong)
@@ -101,11 +99,6 @@ struct SettingsWindowView: View {
                     keySeparator("/")
                     KeyCap(systemImage: "forward.fill")
                 }
-                shortcutRow(label: "prev/next site") {
-                    KeyCap("⌃"); KeyCap("⌥"); KeyCap("⌘"); KeyCap("↑")
-                    keySeparator("/")
-                    KeyCap("↓")
-                }
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 6)
@@ -151,20 +144,20 @@ struct SettingsWindowView: View {
             Divider()
 
             Button {
-                openURL(appState.subscriptionURL)
+                openURL(SomaFM.supportURL)
             } label: {
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(appState.membershipHeaderLine)
+                        Text("Support SomaFM")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
-                        Text(appState.membershipDetailLine)
+                        Text("SomaFM is commercial-free and 100% listener-supported")
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
                     Spacer()
-                    Image(systemName: "arrow.up.right.square")
+                    Image(systemName: "heart")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
@@ -174,39 +167,11 @@ struct SettingsWindowView: View {
             .cursor(.pointingHand)
             .padding(.horizontal, 16)
             .padding(.vertical, 6)
-
-            Divider()
-
-            settingsRow("DI.FM account") {
-                HStack(spacing: 8) {
-                    if let email = appState.accountEmail {
-                        Text(email)
-                            .font(.system(size: 11))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    HoverTextButton(title: "Log Out", tint: .red) {
-                        showLogoutConfirmation = true
-                    }
-                }
-            }
         }
         .frame(width: 320)
         .task {
             guard launchAtLogin == nil else { return }
             launchAtLogin = await Self.readLaunchAtLoginStatus()
-        }
-        .alert("Log out of DI.FM?", isPresented: $showLogoutConfirmation) {
-            Button("Log Out", role: .destructive) {
-                appState.logout()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            if let email = appState.accountEmail {
-                Text("You're signed in as \(email). You'll need to sign in again to listen.")
-            } else {
-                Text("You'll need to sign in with your account again to listen.")
-            }
         }
     }
 

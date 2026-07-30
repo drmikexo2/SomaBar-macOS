@@ -38,56 +38,40 @@ final class HistoryStore {
             sqlite3_close(db)
             return nil
         }
-        // Art columns arrived after 1.0 (v4 on listen_segments, v5 on
-        // song_votes); older DBs need them grafted on before the new SQL
-        // runs. Version 0 means a fresh DB — the CREATEs below cover it.
-        let previousVersion = userVersion()
-        if previousVersion > 0 {
-            if previousVersion < 4 {
-                guard exec("ALTER TABLE listen_segments ADD COLUMN art_url TEXT;") else {
-                    sqlite3_close(db)
-                    return nil
-                }
-            }
-            if previousVersion < 5 {
-                guard exec("ALTER TABLE song_votes ADD COLUMN art_url TEXT;") else {
-                    sqlite3_close(db)
-                    return nil
-                }
-            }
-        }
+        // Fresh schema for SomaBar (no DIBar migration lineage). Channel ids
+        // are SomaFM slugs; songs have no track ids, so votes key on the
+        // normalized artist|title song_key.
         let setup = """
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous = NORMAL;
-        PRAGMA user_version = 5;
+        PRAGMA user_version = 1;
         CREATE TABLE IF NOT EXISTS listen_segments (
             id INTEGER PRIMARY KEY,
             started_at REAL NOT NULL,
             ended_at REAL,
             last_seen_at REAL NOT NULL,
             network TEXT NOT NULL,
-            channel_id INTEGER NOT NULL,
+            channel_id TEXT NOT NULL,
             channel_key TEXT NOT NULL,
             channel_name TEXT NOT NULL,
             artist TEXT NOT NULL DEFAULT '',
             title TEXT NOT NULL DEFAULT '',
-            track_id INTEGER,
+            song_key TEXT,
             end_reason TEXT,
             art_url TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_segments_started ON listen_segments(started_at);
-        CREATE INDEX IF NOT EXISTS idx_segments_net_started ON listen_segments(network, started_at);
         CREATE INDEX IF NOT EXISTS idx_segments_artist_title ON listen_segments(artist, title);
+        CREATE INDEX IF NOT EXISTS idx_segments_song_key ON listen_segments(song_key);
         CREATE TABLE IF NOT EXISTS song_votes (
-            track_id INTEGER PRIMARY KEY,
+            song_key TEXT PRIMARY KEY,
             vote INTEGER NOT NULL,
             artist TEXT NOT NULL DEFAULT '',
             title TEXT NOT NULL DEFAULT '',
             network TEXT NOT NULL,
-            channel_id INTEGER NOT NULL,
+            channel_id TEXT NOT NULL,
             channel_name TEXT NOT NULL,
             voted_at REAL NOT NULL,
-            synced INTEGER NOT NULL DEFAULT 0,
             art_url TEXT
         );
         CREATE TABLE IF NOT EXISTS pending_scrobbles (
@@ -124,17 +108,16 @@ final class HistoryStore {
     func openSegment(
         startedAt: Date,
         network: String,
-        channelId: Int,
+        channelId: String,
         channelKey: String,
         channelName: String,
         artist: String,
         title: String,
-        trackId: Int?,
         artPath: String?
     ) -> Int64? {
         let sql = """
         INSERT INTO listen_segments
-            (started_at, last_seen_at, network, channel_id, channel_key, channel_name, artist, title, track_id, art_url)
+            (started_at, last_seen_at, network, channel_id, channel_key, channel_name, artist, title, song_key, art_url)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         var stmt: OpaquePointer?
@@ -144,13 +127,13 @@ final class HistoryStore {
         sqlite3_bind_double(stmt, 1, t)
         sqlite3_bind_double(stmt, 2, t)
         sqlite3_bind_text(stmt, 3, network, -1, sqliteTransient)
-        sqlite3_bind_int64(stmt, 4, Int64(channelId))
+        sqlite3_bind_text(stmt, 4, channelId, -1, sqliteTransient)
         sqlite3_bind_text(stmt, 5, channelKey, -1, sqliteTransient)
         sqlite3_bind_text(stmt, 6, channelName, -1, sqliteTransient)
         sqlite3_bind_text(stmt, 7, artist, -1, sqliteTransient)
         sqlite3_bind_text(stmt, 8, title, -1, sqliteTransient)
-        if let trackId {
-            sqlite3_bind_int64(stmt, 9, Int64(trackId))
+        if let songKey = TrackMatching.songKey(artist: artist, title: title) {
+            sqlite3_bind_text(stmt, 9, songKey, -1, sqliteTransient)
         } else {
             sqlite3_bind_null(stmt, 9)
         }
@@ -172,16 +155,16 @@ final class HistoryStore {
         _ = step(stmt)
     }
 
-    func enrich(id: Int64, artist: String, title: String, trackId: Int?, artPath: String?) {
+    func enrich(id: Int64, artist: String, title: String, artPath: String?) {
         var stmt: OpaquePointer?
-        // COALESCE: an ICY-only update carries no art and must not wipe
-        // art the API already provided for this segment.
-        guard prepare("UPDATE listen_segments SET artist = ?, title = ?, track_id = ?, art_url = COALESCE(?, art_url) WHERE id = ?;", &stmt) else { return }
+        // COALESCE: an enrichment update without art must not wipe art the
+        // segment already has.
+        guard prepare("UPDATE listen_segments SET artist = ?, title = ?, song_key = ?, art_url = COALESCE(?, art_url) WHERE id = ?;", &stmt) else { return }
         defer { sqlite3_finalize(stmt) }
         sqlite3_bind_text(stmt, 1, artist, -1, sqliteTransient)
         sqlite3_bind_text(stmt, 2, title, -1, sqliteTransient)
-        if let trackId {
-            sqlite3_bind_int64(stmt, 3, Int64(trackId))
+        if let songKey = TrackMatching.songKey(artist: artist, title: title) {
+            sqlite3_bind_text(stmt, 3, songKey, -1, sqliteTransient)
         } else {
             sqlite3_bind_null(stmt, 3)
         }
@@ -245,70 +228,59 @@ final class HistoryStore {
     // MARK: - Song votes
 
     func setVote(
-        trackId: Int,
+        songKey: String,
         vote: Int,
         artist: String,
         title: String,
         network: String,
-        channelId: Int,
+        channelId: String,
         channelName: String,
         at date: Date,
-        synced: Bool,
         artPath: String?
     ) {
         let sql = """
-        INSERT INTO song_votes (track_id, vote, artist, title, network, channel_id, channel_name, voted_at, synced, art_url)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(track_id) DO UPDATE SET
+        INSERT INTO song_votes (song_key, vote, artist, title, network, channel_id, channel_name, voted_at, art_url)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(song_key) DO UPDATE SET
             vote = excluded.vote, artist = excluded.artist, title = excluded.title,
             network = excluded.network, channel_id = excluded.channel_id,
             channel_name = excluded.channel_name, voted_at = excluded.voted_at,
-            synced = excluded.synced,
             art_url = COALESCE(excluded.art_url, art_url);
         """
         var stmt: OpaquePointer?
         guard prepare(sql, &stmt) else { return }
         defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_int64(stmt, 1, Int64(trackId))
+        sqlite3_bind_text(stmt, 1, songKey, -1, sqliteTransient)
         sqlite3_bind_int64(stmt, 2, Int64(vote))
         sqlite3_bind_text(stmt, 3, artist, -1, sqliteTransient)
         sqlite3_bind_text(stmt, 4, title, -1, sqliteTransient)
         sqlite3_bind_text(stmt, 5, network, -1, sqliteTransient)
-        sqlite3_bind_int64(stmt, 6, Int64(channelId))
+        sqlite3_bind_text(stmt, 6, channelId, -1, sqliteTransient)
         sqlite3_bind_text(stmt, 7, channelName, -1, sqliteTransient)
         sqlite3_bind_double(stmt, 8, date.timeIntervalSince1970)
-        sqlite3_bind_int64(stmt, 9, synced ? 1 : 0)
         if let artPath {
-            sqlite3_bind_text(stmt, 10, artPath, -1, sqliteTransient)
+            sqlite3_bind_text(stmt, 9, artPath, -1, sqliteTransient)
         } else {
-            sqlite3_bind_null(stmt, 10)
+            sqlite3_bind_null(stmt, 9)
         }
         _ = step(stmt)
     }
 
-    func clearVote(trackId: Int) {
+    func clearVote(songKey: String) {
         var stmt: OpaquePointer?
-        guard prepare("DELETE FROM song_votes WHERE track_id = ?;", &stmt) else { return }
+        guard prepare("DELETE FROM song_votes WHERE song_key = ?;", &stmt) else { return }
         defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_int64(stmt, 1, Int64(trackId))
+        sqlite3_bind_text(stmt, 1, songKey, -1, sqliteTransient)
         _ = step(stmt)
     }
 
-    func vote(forTrackId trackId: Int) -> Int? {
+    func vote(forSongKey songKey: String) -> Int? {
         var stmt: OpaquePointer?
-        guard prepare("SELECT vote FROM song_votes WHERE track_id = ?;", &stmt) else { return nil }
+        guard prepare("SELECT vote FROM song_votes WHERE song_key = ?;", &stmt) else { return nil }
         defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_int64(stmt, 1, Int64(trackId))
+        sqlite3_bind_text(stmt, 1, songKey, -1, sqliteTransient)
         guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
         return Int(sqlite3_column_int64(stmt, 0))
-    }
-
-    func markVoteSynced(trackId: Int) {
-        var stmt: OpaquePointer?
-        guard prepare("UPDATE song_votes SET synced = 1 WHERE track_id = ?;", &stmt) else { return }
-        defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_int64(stmt, 1, Int64(trackId))
-        _ = step(stmt)
     }
 
     // MARK: - Read queries (history window)
@@ -321,7 +293,7 @@ final class HistoryStore {
         let channelName: String
         let artist: String
         let title: String
-        let trackId: Int?
+        let songKey: String?
         let vote: Int?
         let artURL: URL?
     }
@@ -329,9 +301,9 @@ final class HistoryStore {
     func recentListens(limit: Int) -> [ListenEntry] {
         let sql = """
         SELECT s.id, s.started_at, COALESCE(s.ended_at, s.last_seen_at) - s.started_at,
-               s.network, s.channel_name, s.artist, s.title, s.track_id, v.vote, s.art_url
+               s.network, s.channel_name, s.artist, s.title, s.song_key, v.vote, s.art_url
         FROM listen_segments s
-        LEFT JOIN song_votes v ON v.track_id = s.track_id
+        LEFT JOIN song_votes v ON v.song_key = s.song_key
         WHERE (s.artist != '' OR s.title != '')
         ORDER BY s.started_at DESC
         LIMIT ?;
@@ -350,7 +322,7 @@ final class HistoryStore {
                 channelName: String(cString: sqlite3_column_text(stmt, 4)),
                 artist: String(cString: sqlite3_column_text(stmt, 5)),
                 title: String(cString: sqlite3_column_text(stmt, 6)),
-                trackId: sqlite3_column_type(stmt, 7) == SQLITE_NULL ? nil : Int(sqlite3_column_int64(stmt, 7)),
+                songKey: sqlite3_column_type(stmt, 7) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(stmt, 7)),
                 vote: sqlite3_column_type(stmt, 8) == SQLITE_NULL ? nil : Int(sqlite3_column_int64(stmt, 8)),
                 artURL: sqlite3_column_type(stmt, 9) == SQLITE_NULL
                     ? nil : TrackArt.url(fromStored: String(cString: sqlite3_column_text(stmt, 9)))
@@ -360,7 +332,7 @@ final class HistoryStore {
     }
 
     struct VoteEntry: Identifiable {
-        let id: Int64
+        let id: String
         let votedAt: Date
         let vote: Int
         let network: String
@@ -374,9 +346,9 @@ final class HistoryStore {
         // Votes cast before v5 have no stored art; fall back to art from any
         // listen of the same track.
         let sql = """
-        SELECT v.track_id, v.voted_at, v.vote, v.network, v.channel_name, v.artist, v.title,
+        SELECT v.song_key, v.voted_at, v.vote, v.network, v.channel_name, v.artist, v.title,
                COALESCE(v.art_url, (SELECT s.art_url FROM listen_segments s
-                                    WHERE s.track_id = v.track_id AND s.art_url IS NOT NULL
+                                    WHERE s.song_key = v.song_key AND s.art_url IS NOT NULL
                                     ORDER BY s.started_at DESC LIMIT 1))
         FROM song_votes v
         WHERE v.vote = ?
@@ -391,7 +363,7 @@ final class HistoryStore {
         var entries: [VoteEntry] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             entries.append(VoteEntry(
-                id: sqlite3_column_int64(stmt, 0),
+                id: String(cString: sqlite3_column_text(stmt, 0)),
                 votedAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 1)),
                 vote: Int(sqlite3_column_int64(stmt, 2)),
                 network: String(cString: sqlite3_column_text(stmt, 3)),
@@ -531,7 +503,7 @@ final class HistoryStore {
     func allListensForExport() -> [ListenEntry] {
         let sql = """
         SELECT s.id, s.started_at, COALESCE(s.ended_at, s.last_seen_at) - s.started_at,
-               s.network, s.channel_name, s.artist, s.title, s.track_id
+               s.network, s.channel_name, s.artist, s.title
         FROM listen_segments s
         WHERE (s.artist != '' OR s.title != '')
         ORDER BY s.started_at ASC;
@@ -549,7 +521,7 @@ final class HistoryStore {
                 channelName: String(cString: sqlite3_column_text(stmt, 4)),
                 artist: String(cString: sqlite3_column_text(stmt, 5)),
                 title: String(cString: sqlite3_column_text(stmt, 6)),
-                trackId: sqlite3_column_type(stmt, 7) == SQLITE_NULL ? nil : Int(sqlite3_column_int64(stmt, 7)),
+                songKey: nil,
                 vote: nil,
                 artURL: nil
             ))
@@ -564,14 +536,6 @@ final class HistoryStore {
     }
 
     // MARK: - Helpers
-
-    private func userVersion() -> Int {
-        var stmt: OpaquePointer?
-        guard prepare("PRAGMA user_version;", &stmt) else { return 0 }
-        defer { sqlite3_finalize(stmt) }
-        guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
-        return Int(sqlite3_column_int64(stmt, 0))
-    }
 
     private func exec(_ sql: String) -> Bool {
         var errorMessage: UnsafeMutablePointer<CChar>?

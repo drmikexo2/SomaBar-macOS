@@ -11,14 +11,12 @@ private let log = Logger(subsystem: "com.somabar", category: "HistoryRecorder")
 final class HistoryRecorder {
     private struct Snapshot: Equatable {
         var isPlaying: Bool
-        var network: String?
-        var channelId: Int?
+        var channelId: String?
         var channelKey: String?
         var channelName: String?
         var identityToken: String?
         var artist: String
         var title: String
-        var trackId: Int?
         var trackDuration: Int
         var artPath: String?
     }
@@ -30,10 +28,9 @@ final class HistoryRecorder {
 
     private var openSegmentId: Int64?
     private var openSegmentStartedAt: Date?
-    private var openSegmentTrackId: Int?
     private var lastSnapshot = Snapshot(
-        isPlaying: false, network: nil, channelId: nil, channelKey: nil,
-        channelName: nil, identityToken: nil, artist: "", title: "", trackId: nil,
+        isPlaying: false, channelId: nil, channelKey: nil,
+        channelName: nil, identityToken: nil, artist: "", title: "",
         trackDuration: 0, artPath: nil
     )
 
@@ -145,18 +142,15 @@ final class HistoryRecorder {
                newer.channelName == entry.channelName,
                newer.startedAt.timeIntervalSince(entry.startedAt.addingTimeInterval(entry.duration)) <= maxGap,
                sameTrack(newer, entry) {
-                // Prefer canonical metadata: the side that knows its trackId
-                // carries the API name, not an ICY variant. Newer wins a tie.
-                let canonical = (newer.trackId != nil || entry.trackId == nil) ? newer : entry
                 merged[merged.count - 1] = HistoryStore.ListenEntry(
                     id: newer.id,
                     startedAt: entry.startedAt,
                     duration: newer.duration + entry.duration,
                     network: newer.network,
                     channelName: newer.channelName,
-                    artist: canonical.artist,
-                    title: canonical.title,
-                    trackId: canonical.trackId,
+                    artist: newer.artist,
+                    title: newer.title,
+                    songKey: newer.songKey ?? entry.songKey,
                     vote: newer.vote ?? entry.vote,
                     artURL: newer.artURL ?? entry.artURL
                 )
@@ -173,11 +167,11 @@ final class HistoryRecorder {
         TrackMatching.mergeKey(text)
     }
 
-    /// Whether two history entries record the same track. Track ids decide
-    /// when both sides have one (two DI tracks can share a base title);
-    /// otherwise fall back to names, bridging ICY remix suffixes.
+    /// Whether two history entries record the same track: matching song keys
+    /// decide when both sides have one; otherwise fall back to names,
+    /// bridging ICY remix suffixes.
     private static func sameTrack(_ a: HistoryStore.ListenEntry, _ b: HistoryStore.ListenEntry) -> Bool {
-        if let idA = a.trackId, let idB = b.trackId { return idA == idB }
+        if let keyA = a.songKey, let keyB = b.songKey, keyA == keyB { return true }
         if mergeKey(a.artist) == mergeKey(b.artist), mergeKey(a.title) == mergeKey(b.title) { return true }
         return TrackMatching.sameSong(artistA: a.artist, titleA: a.title, artistB: b.artist, titleB: b.title)
     }
@@ -189,24 +183,20 @@ final class HistoryRecorder {
     // MARK: - Song votes (explicit user actions; recorded regardless of the
     // listening-history toggle)
 
-    func vote(forTrackId trackId: Int) -> Int? {
-        store?.vote(forTrackId: trackId)
+    func vote(forSongKey songKey: String) -> Int? {
+        store?.vote(forSongKey: songKey)
     }
 
-    func recordVote(trackId: Int, vote: Int, artist: String, title: String, network: String, channelId: Int, channelName: String, artPath: String?) {
+    func recordVote(songKey: String, vote: Int, artist: String, title: String, channelId: String, channelName: String, artPath: String?) {
         store?.setVote(
-            trackId: trackId, vote: vote, artist: artist, title: title,
-            network: network, channelId: channelId, channelName: channelName,
-            at: Date(), synced: false, artPath: artPath
+            songKey: songKey, vote: vote, artist: artist, title: title,
+            network: SomaFM.networkTag, channelId: channelId, channelName: channelName,
+            at: Date(), artPath: artPath
         )
     }
 
-    func markVoteSynced(trackId: Int) {
-        store?.markVoteSynced(trackId: trackId)
-    }
-
-    func clearVote(trackId: Int) {
-        store?.clearVote(trackId: trackId)
+    func clearVote(songKey: String) {
+        store?.clearVote(songKey: songKey)
     }
 
     // MARK: - Tick
@@ -231,14 +221,12 @@ final class HistoryRecorder {
         let track = player.currentTrack
         let snapshot = Snapshot(
             isPlaying: player.isPlaying,
-            network: player.currentNetwork?.rawValue,
             channelId: player.currentChannel?.id,
             channelKey: player.currentChannel?.key,
             channelName: player.currentChannel?.name,
             identityToken: player.currentTrackIdentityToken,
             artist: sanitize(track?.artist),
             title: sanitize(track?.title),
-            trackId: track?.trackId,
             trackDuration: track?.duration ?? 0,
             artPath: TrackArt.storagePath(from: track?.artURL)
         )
@@ -276,40 +264,31 @@ final class HistoryRecorder {
         // Open condition — even before track metadata arrives, so buffering
         // and jingles count toward station time.
         if openSegmentId == nil, enabled, snapshot.isPlaying, !isReconnecting,
-           let network = snapshot.network,
            let channelId = snapshot.channelId,
            let channelKey = snapshot.channelKey,
            let channelName = snapshot.channelName {
             openSegmentId = store.openSegment(
                 startedAt: now,
-                network: network,
+                network: SomaFM.networkTag,
                 channelId: channelId,
                 channelKey: channelKey,
                 channelName: channelName,
                 artist: snapshot.artist,
                 title: snapshot.title,
-                trackId: snapshot.trackId,
                 artPath: snapshot.artPath
             )
             openSegmentStartedAt = now
-            openSegmentTrackId = snapshot.trackId
-            log.info("segment open: \(channelName, privacy: .public) [\(network, privacy: .public)]")
+            log.info("segment open: \(channelName, privacy: .public)")
         } else if let id = openSegmentId {
-            // Enrichment: same segment, better metadata (first ICY/API arrival
-            // or the API filling trackId after an ICY title flip). Never a
-            // downgrade: an ICY-only snapshot (no trackId) must not overwrite
-            // API-canonical metadata already attached to this segment.
-            let isDowngrade = snapshot.trackId == nil && openSegmentTrackId != nil
-            if !isDowngrade,
-               snapshot.artist != lastSnapshot.artist
+            // Enrichment: same segment, better metadata (first ICY arrival
+            // for the current song).
+            if snapshot.artist != lastSnapshot.artist
                 || snapshot.title != lastSnapshot.title
-                || snapshot.trackId != lastSnapshot.trackId
                 || snapshot.artPath != lastSnapshot.artPath {
                 store.enrich(
                     id: id, artist: snapshot.artist, title: snapshot.title,
-                    trackId: snapshot.trackId, artPath: snapshot.artPath
+                    artPath: snapshot.artPath
                 )
-                openSegmentTrackId = snapshot.trackId
             }
             if tickCount % 5 == 0 {
                 store.heartbeat(id: id, at: now)
@@ -341,7 +320,6 @@ final class HistoryRecorder {
             }
         }
         openSegmentStartedAt = nil
-        openSegmentTrackId = nil
         refreshTodayTotal()
         #if DEBUG
         if !verifiedAllTimeBase, let store {

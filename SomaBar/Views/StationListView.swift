@@ -1,26 +1,13 @@
 import SwiftUI
 
 struct PlayingRevealRequest: Equatable {
-    let network: Network
-    let channelID: Int
-    let requiresNetworkSwitch: Bool
+    let channelID: String
 
-    var itemID: String {
-        "\(network.rawValue)-\(channelID)"
-    }
+    var itemID: String { channelID }
 
-    static func resolve(
-        channelID: Int?,
-        playingNetwork: Network?,
-        selectedNetwork: Network,
-        allNetworksSelected: Bool
-    ) -> PlayingRevealRequest? {
-        guard let channelID, let playingNetwork else { return nil }
-        return PlayingRevealRequest(
-            network: playingNetwork,
-            channelID: channelID,
-            requiresNetworkSwitch: !allNetworksSelected && selectedNetwork != playingNetwork
-        )
+    static func resolve(channelID: String?) -> PlayingRevealRequest? {
+        guard let channelID else { return nil }
+        return PlayingRevealRequest(channelID: channelID)
     }
 }
 
@@ -30,18 +17,12 @@ struct StationListView: View {
     @State private var recentExpanded = Prefs.bool(.recentStationsExpanded, default: true)
     @State private var highlightedIndex: Int?
     @State private var pendingPlayingReveal: PlayingRevealRequest?
-    @State private var pendingRevealSawLoading = false
     @FocusState private var searchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
-            // Network switcher + search
+            // Search
             HStack {
-                NetworkPicker()
-
-                Divider()
-                    .frame(height: 12)
-
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
                     .font(.caption)
@@ -82,7 +63,7 @@ struct StationListView: View {
             .padding(.vertical, 6)
             .background(.quaternary.opacity(0.5))
 
-            if appState.isLoading && !appState.hasAnyDisplayedChannels {
+            if appState.isLoading && !appState.channelsLoaded {
                 VStack {
                     ProgressView()
                         .controlSize(.small)
@@ -99,33 +80,25 @@ struct StationListView: View {
                         // pins at the top until the next header pushes it off
                         LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                             let searching = !appState.searchText.isEmpty
-                            let showFavorites = !searching
-                                && (!appState.favoriteChannels.isEmpty || appState.favoritesLoadFailed)
+                            let showFavorites = !searching && !appState.favoriteChannels.isEmpty
                             let showRecents = !searching && !appState.recentStations.isEmpty
                             let showSections = showFavorites || showRecents
 
                             // Favorites
                             if showFavorites {
                                 Section {
-                                    if appState.favoritesLoadFailed && appState.favoriteChannels.isEmpty {
-                                        favoritesFailedRow
-                                    } else {
-                                        ForEach(appState.favoriteChannels) { item in
-                                            ChannelRow(item: item, showsNetwork: appState.allNetworksSelected)
-                                                .id("fav-\(item.id)")
-                                        }
+                                    ForEach(appState.favoriteChannels) { item in
+                                        ChannelRow(item: item)
+                                            .id("fav-\(item.id)")
                                     }
                                     Divider()
                                         .padding(.top, 8)
                                 } header: {
-                                    SectionHeader(
-                                        title: favoritesTitle,
-                                        showsSyncWarning: !appState.favoritesSyncAvailable
-                                    )
+                                    SectionHeader(title: "My Favorites")
                                 }
                             }
 
-                            // Recently played (across networks)
+                            // Recently played
                             if showRecents {
                                 Section {
                                     if recentExpanded {
@@ -133,10 +106,6 @@ struct StationListView: View {
                                             RecentRow(entry: entry)
                                         }
                                     }
-                                    // So stars on cross-network recents reflect
-                                    // server state even before that network loads.
-                                    Color.clear.frame(height: 0)
-                                        .task { await appState.loadFavoritesForRecents() }
                                     Divider()
                                         .padding(.top, 8)
                                 } header: {
@@ -169,7 +138,7 @@ struct StationListView: View {
                         if pendingPlayingReveal != nil {
                             fulfillPendingPlayingReveal(proxy: proxy)
                         } else {
-                            scrollToPlayingInCurrentScope(proxy: proxy)
+                            scrollToPlaying(proxy: proxy)
                         }
                     }
                     .background(
@@ -182,12 +151,6 @@ struct StationListView: View {
                         if available {
                             fulfillPendingPlayingReveal(proxy: proxy)
                         }
-                    }
-                    .onChange(of: appState.selectedNetwork) { _, _ in
-                        fulfillPendingPlayingReveal(proxy: proxy)
-                    }
-                    .onChange(of: appState.allNetworksSelected) { _, _ in
-                        fulfillPendingPlayingReveal(proxy: proxy)
                     }
                     .onChange(of: highlightedIndex) { _, index in
                         if let index, appState.filteredChannels.indices.contains(index) {
@@ -210,53 +173,38 @@ struct StationListView: View {
             appState.searchFieldFocused = focused
         }
         .onChange(of: appState.isLoading) { _, loading in
-            guard let request = pendingPlayingReveal else { return }
-            if loading {
-                pendingRevealSawLoading = true
-            } else if pendingRevealSawLoading,
-                      appState.networkDataCache[request.network]?.isLoaded != true {
-                clearPendingPlayingReveal()
+            guard pendingPlayingReveal != nil else { return }
+            if !loading, appState.channelsLoaded {
+                // The catalog is loaded; either the row resolves now or the
+                // playing station is gone.
+                fulfillPendingPlayingReveal(proxy: nil)
             }
         }
     }
 
-    private var favoritesTitle: String {
-        appState.allNetworksSelected
-            ? "My Favorites"
-            : "My \(appState.selectedNetwork.displayName) Favorites"
-    }
-
     private var allChannelsTitle: String {
-        let scope = appState.allNetworksSelected ? "" : "\(appState.selectedNetwork.displayName) "
-        return "All \(scope)Channels (\(appState.filteredChannels.count))"
+        "All Channels (\(appState.filteredChannels.count))"
     }
 
     private var pendingPlayingRevealIsAvailable: Bool {
-        guard let request = pendingPlayingReveal,
-              appState.displayedNetworks.contains(request.network) else { return false }
+        guard let request = pendingPlayingReveal else { return false }
         return rowTarget(for: request) != nil
     }
 
-    /// Cmd+L is allowed to change scope. Keep that intent pending until a
-    /// newly selected site's rows have loaded and rendered.
+    /// Keep the intent pending until the channel rows have loaded and
+    /// rendered.
     private func requestPlayingReveal(proxy: ScrollViewProxy) {
         guard let request = PlayingRevealRequest.resolve(
-            channelID: appState.audioPlayer.currentChannel?.id,
-            playingNetwork: appState.playingNetwork,
-            selectedNetwork: appState.selectedNetwork,
-            allNetworksSelected: appState.allNetworksSelected
+            channelID: appState.audioPlayer.currentChannel?.id
         ) else {
-            clearPendingPlayingReveal()
+            pendingPlayingReveal = nil
             return
         }
 
         pendingPlayingReveal = request
-        pendingRevealSawLoading = appState.isLoading
 
-        if request.requiresNetworkSwitch {
-            appState.selectNetwork(request.network)
-        } else if !appState.searchText.isEmpty,
-                  !appState.filteredChannels.contains(where: { $0.id == request.itemID }) {
+        if !appState.searchText.isEmpty,
+           !appState.filteredChannels.contains(where: { $0.id == request.itemID }) {
             // A navigation command should reveal its destination even when
             // the current search happens to filter that station out.
             appState.searchText = ""
@@ -265,25 +213,21 @@ struct StationListView: View {
         fulfillPendingPlayingReveal(proxy: proxy)
     }
 
-    private func fulfillPendingPlayingReveal(proxy: ScrollViewProxy) {
+    private func fulfillPendingPlayingReveal(proxy: ScrollViewProxy?) {
         guard let request = pendingPlayingReveal else { return }
-        if scroll(to: request, proxy: proxy, animated: true) {
-            clearPendingPlayingReveal()
-        } else if appState.networkDataCache[request.network]?.isLoaded == true {
+        if let proxy, scroll(to: request, proxy: proxy, animated: true) {
+            pendingPlayingReveal = nil
+        } else if appState.channelsLoaded, rowTarget(for: request) == nil {
             // The catalog loaded but no longer contains the playing station.
-            clearPendingPlayingReveal()
+            pendingPlayingReveal = nil
         }
     }
 
-    /// Opening the panel may center the playing row, but it must never switch
-    /// the site the user deliberately chose. Only Cmd+L can do that.
-    private func scrollToPlayingInCurrentScope(proxy: ScrollViewProxy) {
+    /// Opening the panel centers the playing row when it's on screen.
+    private func scrollToPlaying(proxy: ScrollViewProxy) {
         guard let request = PlayingRevealRequest.resolve(
-            channelID: appState.audioPlayer.currentChannel?.id,
-            playingNetwork: appState.playingNetwork,
-            selectedNetwork: appState.selectedNetwork,
-            allNetworksSelected: appState.allNetworksSelected
-        ), !request.requiresNetworkSwitch else { return }
+            channelID: appState.audioPlayer.currentChannel?.id
+        ) else { return }
         _ = scroll(to: request, proxy: proxy, animated: false)
     }
 
@@ -296,7 +240,6 @@ struct StationListView: View {
         proxy: ScrollViewProxy,
         animated: Bool
     ) -> Bool {
-        guard appState.displayedNetworks.contains(request.network) else { return false }
         guard let target = rowTarget(for: request) else { return false }
         if target.hasPrefix("all-"), !allStationsExpanded {
             allStationsExpanded = true
@@ -325,11 +268,6 @@ struct StationListView: View {
         return nil
     }
 
-    private func clearPendingPlayingReveal() {
-        pendingPlayingReveal = nil
-        pendingRevealSawLoading = false
-    }
-
     private func moveHighlight(by delta: Int) {
         let count = appState.filteredChannels.count
         guard count > 0 else { return }
@@ -341,25 +279,9 @@ struct StationListView: View {
 
     private var allChannelRows: some View {
         ForEach(Array(appState.filteredChannels.enumerated()), id: \.element.id) { index, item in
-            ChannelRow(item: item, isHighlighted: index == highlightedIndex, showsNetwork: appState.allNetworksSelected)
+            ChannelRow(item: item, isHighlighted: index == highlightedIndex)
                 .id("all-\(item.id)")
         }
-    }
-
-    private var favoritesFailedRow: some View {
-        HStack(spacing: 6) {
-            Text("Couldn't load favorites")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            Button("Retry") {
-                Task { await appState.retryFailedFavorites() }
-            }
-            .buttonStyle(.plain)
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(Color.accentColor)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 4)
     }
 }
 
@@ -367,33 +289,25 @@ struct StationListView: View {
 
 struct ChannelRow: View {
     @Environment(AppState.self) private var appState
-    let item: NetworkChannel
+    let item: Channel
     var isHighlighted: Bool = false
-    /// All-Sites mode: append the "· Jazz"-style network suffix.
-    var showsNetwork: Bool = false
     @State private var isHovered = false
 
     private var isPlaying: Bool {
-        appState.audioPlayer.currentChannel?.id == item.channel.id
-            && appState.playingNetwork == item.network
+        appState.audioPlayer.currentChannel?.id == item.id
     }
 
     private var isFavorite: Bool {
-        appState.favoriteChannelIds(on: item.network).contains(item.channel.id)
+        appState.favoriteIds.contains(item.id)
     }
 
     var body: some View {
         Button(action: { appState.playChannel(item) }) {
             HStack(spacing: 4) {
-                Text(item.channel.name)
+                Text(item.name)
                     .font(.system(size: 12))
                     .fontWeight(isPlaying ? .semibold : .regular)
                     .playingHighlight(isPlaying)
-                if showsNetwork {
-                    Text("· \(item.network.shortLabel)")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
-                }
                 Spacer()
 
                 // Fixed-width slots keep the star column aligned on every row
@@ -401,7 +315,7 @@ struct ChannelRow: View {
 
                 Group {
                     if isFavorite || isHovered {
-                        Button(action: { appState.toggleFavorite(item.channel, on: item.network) }) {
+                        Button(action: { appState.toggleFavorite(item) }) {
                             Image(systemName: isFavorite ? "star.fill" : "star")
                                 .font(.caption2)
                                 .foregroundStyle(isFavorite ? AnyShapeStyle(.yellow.opacity(0.65)) : AnyShapeStyle(.secondary))
@@ -420,6 +334,7 @@ struct ChannelRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help(item.description ?? item.name)
         .background(
             isPlaying
                 ? Color.accentColor.opacity(0.1)
@@ -431,8 +346,7 @@ struct ChannelRow: View {
 
 // MARK: - Recent Row
 
-/// Row in the Recently Played section — like ChannelRow but cross-network:
-/// shows the network suffix when it isn't the selected one.
+/// Row in the Recently Played section — like ChannelRow but for the MRU list.
 struct RecentRow: View {
     @Environment(AppState.self) private var appState
     let entry: RecentStation
@@ -440,11 +354,10 @@ struct RecentRow: View {
 
     private var isPlaying: Bool {
         appState.audioPlayer.currentChannel?.id == entry.channelId
-            && appState.playingNetwork == entry.network
     }
 
     private var isFavorite: Bool {
-        appState.favoriteChannelIds(on: entry.network).contains(entry.channelId)
+        appState.favoriteIds.contains(entry.channelId)
     }
 
     var body: some View {
@@ -454,18 +367,13 @@ struct RecentRow: View {
                     .font(.system(size: 12))
                     .fontWeight(isPlaying ? .semibold : .regular)
                     .playingHighlight(isPlaying)
-                if appState.allNetworksSelected || entry.network != appState.selectedNetwork {
-                    Text("· \(entry.network.shortLabel)")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
-                }
                 Spacer()
 
                 SpeakerIndicator(isCurrent: isPlaying, isAudible: appState.audioPlayer.isAudiblyPlaying)
 
                 Group {
                     if isFavorite || isHovered {
-                        Button(action: { appState.toggleFavorite(channelId: entry.channelId, name: entry.name, on: entry.network) }) {
+                        Button(action: { appState.toggleFavorite(channelId: entry.channelId, name: entry.name) }) {
                             Image(systemName: isFavorite ? "star.fill" : "star")
                                 .font(.caption2)
                                 .foregroundStyle(isFavorite ? AnyShapeStyle(.yellow.opacity(0.65)) : AnyShapeStyle(.secondary))
@@ -497,7 +405,6 @@ struct RecentRow: View {
 
 struct SectionHeader: View {
     let title: String
-    var showsSyncWarning: Bool = false
     var isExpanded: Binding<Bool>? = nil
 
     var body: some View {
@@ -505,17 +412,9 @@ struct SectionHeader: View {
             Text(title.uppercased())
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.secondary)
-                // Longest titles ("ALL CLASSICAL RADIO CHANNELS (140)") fit,
-                // but never let a sticky header wrap to two lines
+                // Never let a sticky header wrap to two lines
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
-
-            if showsSyncWarning {
-                Image(systemName: "info.circle")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                    .help("Favorites saved locally — syncing with the server isn't available")
-            }
 
             if let isExpanded {
                 Spacer()

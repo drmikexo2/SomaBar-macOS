@@ -19,7 +19,7 @@ final class TrackNotifier: NSObject {
     var popoverIsVisible = false
 
     private var lastIdentityToken: String?
-    private var lastChannelId: Int?
+    private var lastChannelId: String?
     private var channelSwitchedAt: Date?
     private var sessionHasNotifiableTrack = false
     private var pendingPost: Task<Void, Never>?
@@ -135,7 +135,7 @@ final class TrackNotifier: NSObject {
 
     // MARK: - Channel-switch announcements
 
-    /// Banner for a hotkey-driven channel/site switch: "Site · Channel" plus
+    /// Banner for a hotkey-driven channel switch: the channel name plus
     /// the playing song. Streams deliver ICY metadata a beat after the switch,
     /// so wait briefly for it; post without the song after ~4s. Gated by its
     /// own Settings toggle in AppState, independent of `enabled`.
@@ -158,16 +158,14 @@ final class TrackNotifier: NSObject {
 
     private func postSwitchBanner() async {
         // No popover gate: this is feedback for an explicit user action
-        guard let network = player.currentNetwork,
-              let channel = player.currentChannel
-        else {
+        guard let channel = player.currentChannel else {
             log.info("announceSwitch: skipped, no channel loaded")
             return
         }
-        log.info("announceSwitch: posting \(network.displayName, privacy: .public) · \(channel.name, privacy: .public) (track: \(self.realTrackParts != nil, privacy: .public))")
+        log.info("announceSwitch: posting \(channel.name, privacy: .public) (track: \(self.realTrackParts != nil, privacy: .public))")
 
         let content = UNMutableNotificationContent()
-        content.title = "\(network.displayName) · \(channel.name)"
+        content.title = channel.name
         if let parts = realTrackParts {
             content.subtitle = TrackDisplay.artistTitle(parts.artist, parts.title)
         }
@@ -208,8 +206,8 @@ final class TrackNotifier: NSObject {
         if !artist.isEmpty, !title.isEmpty {
             content.subtitle = artist
         }
-        if let network = player.currentNetwork, let channel = player.currentChannel {
-            content.body = "\(network.displayName) · \(channel.name)"
+        if let channel = player.currentChannel {
+            content.body = channel.name
         }
         content.sound = nil
 

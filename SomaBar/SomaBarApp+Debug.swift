@@ -24,18 +24,20 @@ extension AppDelegate {
         }
 
         DistributedNotificationCenter.default().addObserver(
-            forName: NSNotification.Name("com.somabar.debug.selectNetwork"),
+            forName: NSNotification.Name("com.somabar.debug.playChannel"),
             object: nil,
             queue: .main
         ) { [weak self] note in
             let raw = note.object as? String
             Task { @MainActor in
-                guard let raw, let network = Network(rawValue: raw) else {
-                    log.error("DEBUG: unknown network '\(raw ?? "nil", privacy: .public)'")
+                guard let raw,
+                      let channel = self?.appState.channels.first(where: { $0.id == raw })
+                else {
+                    log.error("DEBUG: unknown channel '\(raw ?? "nil", privacy: .public)'")
                     return
                 }
-                log.error("DEBUG: selecting network \(network.rawValue, privacy: .public)")
-                self?.appState.selectNetwork(network)
+                log.error("DEBUG: playing channel \(channel.id, privacy: .public)")
+                self?.appState.playChannel(channel)
             }
         }
 

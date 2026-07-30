@@ -8,11 +8,11 @@ final class HistoryMergingTests: XCTestCase {
         id: Int64,
         start: TimeInterval,
         duration: TimeInterval,
-        network: String = "di",
-        channel: String = "Vocal Trance",
+        network: String = "somafm",
+        channel: String = "Groove Salad",
         artist: String = "Above & Beyond",
         title: String = "Sun & Moon",
-        trackId: Int? = 100,
+        songKey: String? = "above & beyond|sun & moon",
         vote: Int? = nil
     ) -> HistoryStore.ListenEntry {
         HistoryStore.ListenEntry(
@@ -23,7 +23,7 @@ final class HistoryMergingTests: XCTestCase {
             channelName: channel,
             artist: artist,
             title: title,
-            trackId: trackId,
+            songKey: songKey,
             vote: vote,
             artURL: nil
         )
@@ -52,22 +52,22 @@ final class HistoryMergingTests: XCTestCase {
         XCTAssertEqual(HistoryRecorder.mergingAdjacent([newer, older]).count, 2)
     }
 
-    func testKeepsSeparateForDifferentTrackIds() {
-        let older = entry(id: 1, start: 1000, duration: 60, trackId: 100)
-        let newer = entry(id: 2, start: 1120, duration: 30, trackId: 200)
+    func testKeepsSeparateForDifferentSongs() {
+        let older = entry(id: 1, start: 1000, duration: 60, title: "Sun & Moon", songKey: "above & beyond|sun & moon")
+        let newer = entry(id: 2, start: 1120, duration: 30, title: "Alchemy", songKey: "above & beyond|alchemy")
         XCTAssertEqual(HistoryRecorder.mergingAdjacent([newer, older]).count, 2)
     }
 
-    func testBridgesIcyRemixSuffixAndPrefersCanonicalMetadata() {
-        // ICY-only segment (no trackId) carries a remix suffix; the API
-        // segment knows its trackId and the canonical title.
-        let older = entry(id: 1, start: 1000, duration: 60, title: "Sun & Moon (Club Mix)", trackId: nil)
-        let newer = entry(id: 2, start: 1120, duration: 30, title: "Sun & Moon", trackId: 100)
+    func testBridgesIcyRemixSuffix() {
+        // The same song rendered with and without a remix suffix (song keys
+        // differ, so the fuzzy name match does the bridging).
+        let older = entry(id: 1, start: 1000, duration: 60, title: "Sun & Moon (Club Mix)", songKey: "above & beyond|sun & moon (club mix)")
+        let newer = entry(id: 2, start: 1120, duration: 30, title: "Sun & Moon", songKey: "above & beyond|sun & moon")
         let merged = HistoryRecorder.mergingAdjacent([newer, older])
 
         XCTAssertEqual(merged.count, 1)
         XCTAssertEqual(merged[0].title, "Sun & Moon")
-        XCTAssertEqual(merged[0].trackId, 100)
+        XCTAssertEqual(merged[0].songKey, "above & beyond|sun & moon")
     }
 
     func testKeepsVoteFromEitherSide() {

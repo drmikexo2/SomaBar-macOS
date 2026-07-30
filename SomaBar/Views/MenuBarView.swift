@@ -14,30 +14,18 @@ struct MenuBarView: View {
                 UpdateStatusBanner(phase: phase, action: onCheckForUpdates)
                 Divider()
             }
-            if appState.isLoggedIn {
-                if appState.audioPlayer.playbackError != nil, appState.playbackFailureLooksLikeNoPremium {
-                    ErrorBanner(
-                        message: "Playback failed — premium subscription may be required",
-                        actionTitle: "Subscribe",
-                        action: { openURL(AppState.subscriptionURL) },
-                        onDismiss: { appState.audioPlayer.playbackError = nil }
-                    )
-                    Divider()
-                } else if let message = appState.errorMessage ?? appState.audioPlayer.playbackError {
-                    ErrorBanner(message: message) {
-                        appState.errorMessage = nil
-                        appState.audioPlayer.playbackError = nil
-                    }
-                    Divider()
+            if let message = appState.errorMessage ?? appState.audioPlayer.playbackError {
+                ErrorBanner(message: message) {
+                    appState.errorMessage = nil
+                    appState.audioPlayer.playbackError = nil
                 }
-                PlayerControlsView()
                 Divider()
-                StationListView()
-                Divider()
-                footer
-            } else {
-                LoginView()
             }
+            PlayerControlsView()
+            Divider()
+            StationListView()
+            Divider()
+            footer
         }
         .frame(width: 320)
     }

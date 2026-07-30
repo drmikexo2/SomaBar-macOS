@@ -8,12 +8,6 @@ private let log = Logger(subsystem: "com.somabar", category: "AudioPlayer")
 @Observable
 @MainActor
 final class AudioPlayer {
-    private enum TimingMode {
-        case startupFrozen
-        case icyAnchored
-        case frozenNoIcy
-    }
-
     /// What the transport is actually doing. `isPlaying` stays "the user wants
     /// playback" so state diffing in HistoryRecorder keeps working unchanged.
     enum PlaybackPhase: Equatable {
@@ -36,7 +30,6 @@ final class AudioPlayer {
     var onPreviousTrack: (() -> Void)?
     var playbackError: String?
     var currentChannel: Channel?
-    var currentNetwork: Network?
     var currentTrack: NowPlaying?
     var currentArtImage: NSImage?
     var currentTrackIdentityToken: String?
@@ -55,27 +48,21 @@ final class AudioPlayer {
     }
 
     private var player: AVPlayer?
-    private var trackPollTask: Task<Void, Never>?
     private var statusObservation: NSKeyValueObservation?
     private var timeControlObservation: NSKeyValueObservation?
     private var metadataOutput: AVPlayerItemMetadataOutput?
     private var metadataDelegate: StreamMetadataDelegate?
-    private let normalPollIntervalSeconds = 10
-    private var apiTrackIdentity: String?
-    private var apiTrackStartedAt: Date?
-    private var apiTrackDuration: Int = 0
     private var playbackSessionID = UUID()
     private var lastIcyStreamTitle: String?
-    private var lastIcyLogicalKey: String?
-    private var timingMode: TimingMode = .startupFrozen
     private var audibleStartedAt: Date?
-    private var frozenElapsedSeconds: Int = 0
-    // Song shown before the latest ICY title change; lets a poll that still
-    // reports it be treated as API lag rather than the API moving ahead.
-    private var previousDisplayedTrack: (artist: String, title: String)?
+    private var enrichmentTask: Task<Void, Never>?
 
-    // Reconnect state
-    private var lastPlayArgs: (channel: Channel, url: URL, network: Network)?
+    // Reconnect state. The stream servers are load-balancer assignments, not
+    // stable hosts: each reconnect attempt rotates to the next server in the
+    // resolved playlist, and a full unsuccessful cycle (or a wake/path change)
+    // re-resolves the .pls for a fresh assignment.
+    private var lastPlayArgs: (channel: Channel, stream: ResolvedStream, resolve: () async throws -> ResolvedStream)?
+    private var serverIndex = 0
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttempt = 0
     private var hasPlayedThisSession = false
@@ -95,22 +82,32 @@ final class AudioPlayer {
 
     // MARK: - Playback
 
-    func play(channel: Channel, streamURL: URL, network: Network) {
+    /// Starts a channel from a resolved stream. `resolve` re-fetches the .pls
+    /// when the current server assignments go stale (reconnect cycle, wake).
+    func play(
+        channel: Channel,
+        stream: ResolvedStream,
+        resolve: @escaping () async throws -> ResolvedStream
+    ) {
         // A user-initiated play resets recovery; a retry from the reconnect
         // loop must not cancel the loop that issued it.
         if !isReconnectRestart {
             cancelReconnect()
             reconnectAttempt = 0
             autoResumeOnNetworkReturn = false
+            serverIndex = 0
         }
-        lastPlayArgs = (channel, streamURL, network)
+        lastPlayArgs = (channel, stream, resolve)
         hasPlayedThisSession = false
         pausedAt = nil
         pauseTeardownTimer?.invalidate()
         pauseTeardownTimer = nil
+        startStream(channel: channel, stream: stream)
+    }
 
-        // Stop existing polling and observation
-        trackPollTask?.cancel()
+    private func startStream(channel: Channel, stream: ResolvedStream) {
+        enrichmentTask?.cancel()
+        enrichmentTask = nil
         statusObservation?.invalidate()
         statusObservation = nil
         removeItemNotificationObservers()
@@ -138,15 +135,17 @@ final class AudioPlayer {
         playbackSessionID = sessionID
         playbackError = nil
         lastIcyStreamTitle = nil
-        lastIcyLogicalKey = nil
-        timingMode = .startupFrozen
         audibleStartedAt = nil
-        frozenElapsedSeconds = 0
-        previousDisplayedTrack = nil
 
+        let streamURL = stream.servers[min(serverIndex, stream.servers.count - 1)]
+        // The User-Agent matters: SomaFM's Icecast edge drops anonymous
+        // clients, and the identifying UA is part of polite unofficial use.
         let asset = AVURLAsset(
             url: streamURL,
-            options: ["AVURLAssetHTTPHeaderFieldsKey": ["Icy-MetaData": "1"]]
+            options: ["AVURLAssetHTTPHeaderFieldsKey": [
+                "Icy-MetaData": "1",
+                "User-Agent": SomaClient.userAgent,
+            ]]
         )
         let item = AVPlayerItem(asset: asset)
 
@@ -175,35 +174,29 @@ final class AudioPlayer {
                 Task { @MainActor [weak self] in self?.handleItemFailure(nil) }
             },
         ]
-        installMetadataOutput(on: item, channelId: channel.id, channelName: channel.name, network: network, sessionID: sessionID)
+        installMetadataOutput(on: item, channel: channel, sessionID: sessionID)
 
+        log.info("startStream: \(channel.name, privacy: .public) via \(streamURL.host ?? "?", privacy: .public)")
         player?.replaceCurrentItem(with: item)
         player?.play()
         phase = .buffering
 
         currentChannel = channel
-        currentNetwork = network
         isPlaying = true
-        currentArtImage = nil
         currentTrackIdentityToken = nil
-        apiTrackIdentity = nil
-        apiTrackStartedAt = nil
-        apiTrackDuration = 0
 
         currentTrack = NowPlaying(
             channelName: channel.name,
             artist: "",
             title: "Loading...",
-            trackId: nil,
-            artURL: nil,
+            album: nil,
+            artURL: channel.logoURL,
             duration: 0,
             startedAt: nil,
-            elapsedOverride: 0,
-            upVotes: 0,
-            downVotes: 0
+            elapsedOverride: nil
         )
         updateNowPlaying()
-        startTrackPolling(channelId: channel.id, channelName: channel.name, network: network)
+        loadChannelArtwork(channel: channel, sessionID: sessionID)
     }
 
     func pause() {
@@ -213,8 +206,8 @@ final class AudioPlayer {
         isPlaying = false
         pausedAt = Date()
         phase = .paused
-        trackPollTask?.cancel()
-        trackPollTask = nil
+        enrichmentTask?.cancel()
+        enrichmentTask = nil
         // A paused AVPlayer keeps downloading the live stream, but resume()
         // discards the buffer and restarts anyway once the pause passes 60s —
         // so after that point, drop the item and stop paying for dead bytes.
@@ -248,19 +241,18 @@ final class AudioPlayer {
         // A live buffer paused for long (or a dead item) is stale or badly
         // behind — restart the stream instead of resuming into silence.
         // (Past 60s the item may already be gone via tearDownPausedStream.)
+        // Restarts re-resolve the .pls first: server assignments have likely
+        // rotated while paused, falling back to the cached ones.
         let pausedTooLong = pausedAt.map { Date().timeIntervalSince($0) > 60 } ?? false
-        if let args = lastPlayArgs,
+        if lastPlayArgs != nil,
            pausedTooLong || player?.currentItem == nil || player?.currentItem?.status == .failed {
-            play(channel: args.channel, streamURL: args.url, network: args.network)
+            restartWithFreshStream()
             return
         }
         pausedAt = nil
         player?.play()
         isPlaying = true
         phase = .buffering
-        if let args = lastPlayArgs, trackPollTask == nil {
-            startTrackPolling(channelId: args.channel.id, channelName: args.channel.name, network: args.network)
-        }
         updateNowPlaying()
     }
 
@@ -273,14 +265,15 @@ final class AudioPlayer {
         reconnectAttempt = 0
         autoResumeOnNetworkReturn = false
         lastPlayArgs = nil
+        serverIndex = 0
         lastItemError = nil
         pausedAt = nil
         pauseTeardownTimer?.invalidate()
         pauseTeardownTimer = nil
         hasPlayedThisSession = false
         phase = .idle
-        trackPollTask?.cancel()
-        trackPollTask = nil
+        enrichmentTask?.cancel()
+        enrichmentTask = nil
         statusObservation?.invalidate()
         statusObservation = nil
         removeItemNotificationObservers()
@@ -291,20 +284,12 @@ final class AudioPlayer {
         isPlaying = false
         playbackError = nil
         currentChannel = nil
-        currentNetwork = nil
         currentTrack = nil
         currentArtImage = nil
         currentTrackIdentityToken = nil
-        apiTrackIdentity = nil
-        apiTrackStartedAt = nil
-        apiTrackDuration = 0
         playbackSessionID = UUID()
         lastIcyStreamTitle = nil
-        lastIcyLogicalKey = nil
-        timingMode = .startupFrozen
         audibleStartedAt = nil
-        frozenElapsedSeconds = 0
-        previousDisplayedTrack = nil
         clearNowPlaying()
     }
 
@@ -364,8 +349,7 @@ final class AudioPlayer {
     private func beginReconnect() {
         guard isPlaying, reconnectTask == nil, lastPlayArgs != nil else { return }
         // Startup failures (never audible this session) get a short ladder so
-        // a bad key or missing subscription surfaces quickly; mid-stream drops
-        // get the full one.
+        // a dead stream surfaces quickly; mid-stream drops get the full one.
         let maxAttempts = hasPlayedThisSession ? Self.reconnectBackoff.count : 3
         reconnectTask = Task { [weak self] in
             await self?.runReconnectLoop(maxAttempts: maxAttempts)
@@ -387,10 +371,23 @@ final class AudioPlayer {
             phase = .reconnecting(attempt: reconnectAttempt)
             log.debug("RECONNECT: attempt \(self.reconnectAttempt, privacy: .public)/\(maxAttempts, privacy: .public) in \(delay, privacy: .public)s")
             try? await Task.sleep(for: .seconds(delay))
-            guard !Task.isCancelled, isPlaying, let args = lastPlayArgs else { return }
+            guard !Task.isCancelled, isPlaying, var args = lastPlayArgs else { return }
+
+            // Rotate to the next redundant server; after a full unsuccessful
+            // cycle, re-resolve the .pls for a fresh server assignment.
+            serverIndex += 1
+            if serverIndex >= args.stream.servers.count {
+                serverIndex = 0
+                if let fresh = try? await args.resolve() {
+                    args = (args.channel, fresh, args.resolve)
+                    lastPlayArgs = args
+                    log.debug("RECONNECT: re-resolved playlist (\(fresh.servers.count, privacy: .public) servers)")
+                }
+                guard !Task.isCancelled, isPlaying else { return }
+            }
 
             isReconnectRestart = true
-            play(channel: args.channel, streamURL: args.url, network: args.network)
+            play(channel: args.channel, stream: args.stream, resolve: args.resolve)
             isReconnectRestart = false
             phase = .reconnecting(attempt: reconnectAttempt)
 
@@ -420,25 +417,40 @@ final class AudioPlayer {
         return false
     }
 
+    /// Restart from a freshly resolved .pls, falling back to the cached
+    /// resolution if the fetch fails. Used after wake/path changes, where the
+    /// old server assignment is stale by definition.
+    private func restartWithFreshStream() {
+        guard let args = lastPlayArgs else { return }
+        cancelReconnect()
+        reconnectAttempt = 0
+        serverIndex = 0
+        Task { [weak self] in
+            let stream = (try? await args.resolve()) ?? args.stream
+            guard let self, self.lastPlayArgs != nil else { return }
+            self.lastPlayArgs = (args.channel, stream, args.resolve)
+            self.play(channel: args.channel, stream: stream, resolve: args.resolve)
+        }
+    }
+
     /// Called by PlaybackRecovery when the network path becomes satisfied.
     func networkPathRestored() {
         if isPlaying, isRecovering {
             reconnectAttempt = 0
             cancelReconnect()
             beginReconnect()
-        } else if phase == .failed, autoResumeOnNetworkReturn, let args = lastPlayArgs {
+        } else if phase == .failed, autoResumeOnNetworkReturn, lastPlayArgs != nil {
             autoResumeOnNetworkReturn = false
-            play(channel: args.channel, streamURL: args.url, network: args.network)
+            isPlaying = true
+            restartWithFreshStream()
         }
     }
 
     /// Called by PlaybackRecovery after system wake if playback was active.
     /// A slept live-stream item is never trustworthy — always restart.
     func restartAfterWake() {
-        guard isPlaying, let args = lastPlayArgs else { return }
-        cancelReconnect()
-        reconnectAttempt = 0
-        play(channel: args.channel, streamURL: args.url, network: args.network)
+        guard isPlaying, lastPlayArgs != nil else { return }
+        restartWithFreshStream()
     }
 
     private func removeItemNotificationObservers() {
@@ -454,12 +466,15 @@ final class AudioPlayer {
         var info = [String: Any]()
         info[MPMediaItemPropertyTitle] = currentTrack?.title ?? currentChannel?.name ?? "SomaBar"
         info[MPMediaItemPropertyArtist] = currentTrack?.artist ?? ""
-        info[MPMediaItemPropertyAlbumTitle] = currentNetwork?.displayName ?? currentChannel?.name ?? "SomaBar"
+        info[MPMediaItemPropertyAlbumTitle] = currentTrack?.album ?? currentChannel?.name ?? "SomaBar"
         info[MPNowPlayingInfoPropertyIsLiveStream] = true
         info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
 
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : .paused
+        if let image = currentArtImage {
+            Task { await updateNowPlayingArtwork(image: image) }
+        }
     }
 
     private func clearNowPlaying() {
@@ -504,210 +519,28 @@ final class AudioPlayer {
         }
     }
 
-    // MARK: - Track Polling
+    // MARK: - Channel Artwork
 
-    private func startTrackPolling(channelId: Int, channelName: String, network: Network) {
-        trackPollTask = Task { [weak self] in
-            await self?.fetchAndUpdateTrack(channelId: channelId, channelName: channelName, network: network)
-
-            while !Task.isCancelled {
-                if let remaining = self?.apiTimeRemaining, remaining > 0, remaining < 30 {
-                    // Near track end — sleep until track_end + 1s
-                    log.debug("POLL: sleeping \(remaining + 1, privacy: .public)s (track_end+1, remaining=\(remaining, privacy: .public))")
-                    try? await Task.sleep(for: .seconds(remaining + 1))
-                    guard !Task.isCancelled, self != nil else { break }
-
-                    let oldIdentity = self?.apiTrackIdentity
-                    await self?.fetchAndUpdateTrack(channelId: channelId, channelName: channelName, network: network)
-
-                    // Retry at +3s, +5s, +7s, +9s if API hasn't updated
-                    if self?.apiTrackIdentity == oldIdentity {
-                        for attempt in 1...4 {
-                            let offset = 1 + attempt * 2 // +3, +5, +7, +9
-                            log.debug("POLL: retry \(attempt, privacy: .public)/4 (track_end+\(offset, privacy: .public)s)")
-                            try? await Task.sleep(for: .seconds(2))
-                            guard !Task.isCancelled, self != nil else { break }
-                            await self?.fetchAndUpdateTrack(channelId: channelId, channelName: channelName, network: network)
-                            if self?.apiTrackIdentity != oldIdentity { break }
-                        }
-                    }
-                } else {
-                    // Normal poll
-                    log.debug("POLL: sleeping \(self?.normalPollIntervalSeconds ?? 10, privacy: .public)s (apiTimeRemaining=\(self?.apiTimeRemaining?.description ?? "nil", privacy: .public))")
-                    try? await Task.sleep(for: .seconds(self?.normalPollIntervalSeconds ?? 10))
-                    guard !Task.isCancelled, self != nil else { break }
-                    await self?.fetchAndUpdateTrack(channelId: channelId, channelName: channelName, network: network)
-                }
-            }
+    /// SomaFM has no per-track art; the channel logo is the artwork for the
+    /// whole session, loaded once per (re)start.
+    private func loadChannelArtwork(channel: Channel, sessionID: UUID) {
+        currentArtImage = nil
+        guard let url = channel.logoURL else { return }
+        Task { [weak self] in
+            let image = await ArtCache.image(for: url)
+            guard let self, self.playbackSessionID == sessionID, let image else { return }
+            self.currentArtImage = image
+            await self.updateNowPlayingArtwork(image: image)
         }
     }
 
-    private func fetchAndUpdateTrack(channelId: Int, channelName: String, network: Network) async {
-        guard let item = try? await DIClient.fetchCurrentTrack(channelId: channelId, network: network) else { return }
+    // MARK: - ICY Metadata (the sole track-change signal)
 
-        let apiArtist = item.artist ?? ""
-        let apiTitle = item.title ?? item.track ?? ""
-        let apiLogicalKey = logicalTrackKey(artist: apiArtist, title: apiTitle)
-        let upVotes = item.votes?.up ?? 0
-        let downVotes = item.votes?.down ?? 0
-
-        var artURL: URL?
-        if let art = item.artUrl, !art.isEmpty {
-            let urlStr = art.hasPrefix("//") ? "https:\(art)" : art
-            artURL = URL(string: urlStr)
-        }
-
-        let apiStartedAt: Date? = item.started.map { Date(timeIntervalSince1970: TimeInterval($0)) }
-        let identity = resolveTrackIdentity(item: item, artist: apiArtist, title: apiTitle)
-        let apiDuration = item.duration ?? 0
-
-        apiTrackIdentity = identity
-        apiTrackStartedAt = apiStartedAt
-        apiTrackDuration = apiDuration
-
-        let previousTrack = currentTrack
-        let previousArtURL = previousTrack?.artURL
-        var nextTrack = previousTrack ?? NowPlaying(
-            channelName: channelName,
-            artist: "",
-            title: "Loading...",
-            trackId: nil,
-            artURL: nil,
-            duration: 0,
-            startedAt: nil,
-            elapsedOverride: 0,
-            upVotes: 0,
-            downVotes: 0
-        )
-        var shouldUpdateTrack = false
-
-        switch timingMode {
-        case .startupFrozen:
-            let displayArtist = apiArtist.isEmpty ? nextTrack.artist : apiArtist
-            let displayTitle = apiTitle.isEmpty ? nextTrack.title : apiTitle
-
-            nextTrack = NowPlaying(
-                channelName: channelName,
-                artist: displayArtist,
-                title: displayTitle,
-                trackId: item.trackId ?? nextTrack.trackId,
-                artURL: artURL ?? nextTrack.artURL,
-                duration: apiDuration,
-                startedAt: apiStartedAt ?? nextTrack.startedAt,
-                elapsedOverride: nil,
-                upVotes: upVotes,
-                downVotes: downVotes
-            )
-            shouldUpdateTrack = true
-
-        case .icyAnchored:
-            let currentLogicalKey = currentLogicalTrackKey
-            // Fuzzy match: ICY titles carry remix suffixes and quote variants
-            // the API's canonical name lacks. On a match, the API's names win
-            // (canonical identity) while ICY keeps owning timing.
-            if TrackMatching.sameSong(
-                artistA: apiArtist, titleA: apiTitle,
-                artistB: nextTrack.artist, titleB: nextTrack.title
-            ) {
-                nextTrack = NowPlaying(
-                    channelName: channelName,
-                    artist: apiArtist.isEmpty ? nextTrack.artist : apiArtist,
-                    title: apiTitle.isEmpty ? nextTrack.title : apiTitle,
-                    trackId: item.trackId ?? nextTrack.trackId,
-                    artURL: artURL ?? nextTrack.artURL,
-                    duration: apiDuration,
-                    startedAt: audibleStartedAt ?? nextTrack.startedAt,
-                    elapsedOverride: nil,
-                    upVotes: upVotes,
-                    downVotes: downVotes
-                )
-                shouldUpdateTrack = true
-            } else if let previous = previousDisplayedTrack, TrackMatching.sameSong(
-                artistA: apiArtist, titleA: apiTitle,
-                artistB: previous.artist, titleB: previous.title
-            ) {
-                // API still reports the song ICY just left — it lags the
-                // stream, not the other way around. Keep ticking and let the
-                // near-track-end retries catch it up.
-                shouldUpdateTrack = false
-            } else if apiLogicalKey != nil, currentLogicalKey != nil {
-                // API is on a track that is neither the current nor the
-                // previous song: it moved ahead before ICY reported it.
-                // Freeze until ICY catches up.
-                frozenElapsedSeconds = currentElapsedSeconds()
-                timingMode = .frozenNoIcy
-                nextTrack = NowPlaying(
-                    channelName: nextTrack.channelName,
-                    artist: nextTrack.artist,
-                    title: nextTrack.title,
-                    trackId: nextTrack.trackId,
-                    artURL: nextTrack.artURL,
-                    duration: nextTrack.duration,
-                    startedAt: nextTrack.startedAt,
-                    elapsedOverride: frozenElapsedSeconds,
-                    upVotes: nextTrack.upVotes,
-                    downVotes: nextTrack.downVotes
-                )
-                shouldUpdateTrack = true
-                log.info("POLL: API ahead of ICY — freezing elapsed at \(self.frozenElapsedSeconds, privacy: .public)s")
-            } else {
-                // No stable API title to merge; keep current audible state.
-                shouldUpdateTrack = false
-            }
-
-        case .frozenNoIcy:
-            // Same fuzzy test: the freeze holds while the API is on the next
-            // song (different title), and lifts once it agrees with ours —
-            // resuming the tick from the ICY anchor set at the title change.
-            if TrackMatching.sameSong(
-                artistA: apiArtist, titleA: apiTitle,
-                artistB: nextTrack.artist, titleB: nextTrack.title
-            ) {
-                timingMode = .icyAnchored
-                frozenElapsedSeconds = 0
-                nextTrack = NowPlaying(
-                    channelName: channelName,
-                    artist: apiArtist.isEmpty ? nextTrack.artist : apiArtist,
-                    title: apiTitle.isEmpty ? nextTrack.title : apiTitle,
-                    trackId: item.trackId ?? nextTrack.trackId,
-                    artURL: artURL ?? nextTrack.artURL,
-                    duration: apiDuration,
-                    startedAt: audibleStartedAt ?? nextTrack.startedAt,
-                    elapsedOverride: nil,
-                    upVotes: upVotes,
-                    downVotes: downVotes
-                )
-                shouldUpdateTrack = true
-            }
-        }
-
-        if shouldUpdateTrack {
-            currentTrack = nextTrack
-            if timingMode == .startupFrozen {
-                currentTrackIdentityToken = identity
-            }
-            updateNowPlaying()
-        }
-
-        let shouldReloadArt = shouldUpdateTrack && (previousArtURL != nextTrack.artURL)
-        if shouldReloadArt {
-            let loadedImage = await loadArtImage(url: nextTrack.artURL)
-            if let loadedImage {
-                currentArtImage = loadedImage
-                await updateNowPlayingArtwork(image: loadedImage)
-            } else if previousArtURL != nil {
-                currentArtImage = nil
-            }
-        }
-    }
-
-    private func installMetadataOutput(on item: AVPlayerItem, channelId: Int, channelName: String, network: Network, sessionID: UUID) {
+    private func installMetadataOutput(on item: AVPlayerItem, channel: Channel, sessionID: UUID) {
         let output = AVPlayerItemMetadataOutput(identifiers: nil)
         let delegate = StreamMetadataDelegate(
             owner: self,
-            channelId: channelId,
-            channelName: channelName,
-            network: network,
+            channel: channel,
             sessionID: sessionID
         )
 
@@ -723,9 +556,7 @@ final class AudioPlayer {
 
     fileprivate func handleTimedMetadata(
         _ groups: [AVTimedMetadataGroup],
-        channelId: Int,
-        channelName: String,
-        network: Network,
+        channel: Channel,
         sessionID: UUID
     ) async {
         guard sessionID == playbackSessionID else { return }
@@ -733,78 +564,86 @@ final class AudioPlayer {
         for group in groups {
             for item in group.items {
                 guard let streamTitle = await extractIcyStreamTitle(from: item) else { continue }
-                await handleIcyStreamTitle(streamTitle, channelId: channelId, channelName: channelName, network: network, sessionID: sessionID)
+                handleIcyStreamTitle(streamTitle, channel: channel, sessionID: sessionID)
                 return
             }
         }
     }
 
-    private func handleIcyStreamTitle(_ streamTitle: String, channelId: Int, channelName: String, network: Network, sessionID: UUID) async {
+    private func handleIcyStreamTitle(_ streamTitle: String, channel: Channel, sessionID: UUID) {
         guard sessionID == playbackSessionID else { return }
 
         let normalizedTitle = streamTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedTitle.isEmpty else { return }
-
-        let (artist, title) = splitArtistAndTitle(from: normalizedTitle)
-        let logicalKey = logicalTrackKey(artist: artist, title: title) ?? normalizedTitle.lowercased()
-
-        // Hybrid timing: keep API-based elapsed at startup. The first ICY title packet is
-        // only used to seed ICY state, not to reset elapsed to zero.
-        if lastIcyStreamTitle == nil {
-            lastIcyStreamTitle = normalizedTitle
-            lastIcyLogicalKey = logicalKey
-
-            if let existing = currentTrack,
-               existing.title == "Loading..." || existing.title.isEmpty {
-                currentTrack = NowPlaying(
-                    channelName: channelName,
-                    artist: artist,
-                    title: title,
-                    trackId: existing.trackId,
-                    artURL: existing.artURL,
-                    duration: existing.duration,
-                    startedAt: existing.startedAt,
-                    elapsedOverride: existing.elapsedOverride,
-                    upVotes: existing.upVotes,
-                    downVotes: existing.downVotes
-                )
-                updateNowPlaying()
-            }
-
-            log.debug("ICY: initial stream title seed '\(normalizedTitle, privacy: .public)'")
-            await fetchAndUpdateTrack(channelId: channelId, channelName: channelName, network: network)
-            return
-        }
-
         guard normalizedTitle != lastIcyStreamTitle else { return }
+
+        let isInitialSeed = lastIcyStreamTitle == nil
         lastIcyStreamTitle = normalizedTitle
 
-        previousDisplayedTrack = currentTrack.map { ($0.artist, $0.title) }
-        lastIcyLogicalKey = logicalKey
-        timingMode = .icyAnchored
-        audibleStartedAt = Date()
-        frozenElapsedSeconds = 0
-        currentArtImage = nil
+        let (artist, title) = splitArtistAndTitle(from: normalizedTitle)
+        let logicalKey = TrackMatching.songKey(artist: artist, title: title) ?? normalizedTitle.lowercased()
+
+        // The first ICY packet reports a song already in progress — its start
+        // time is unknown, so no elapsed ticks until the first real change.
+        if isInitialSeed {
+            audibleStartedAt = nil
+            log.debug("ICY: initial stream title seed '\(normalizedTitle, privacy: .public)'")
+        } else {
+            audibleStartedAt = Date()
+            log.debug("ICY: stream title update '\(normalizedTitle, privacy: .public)'")
+        }
 
         currentTrack = NowPlaying(
-            channelName: channelName,
+            channelName: channel.name,
             artist: artist,
             title: title,
-            trackId: nil,
-            artURL: nil,
+            album: nil,
+            artURL: channel.logoURL,
             duration: 0,
             startedAt: audibleStartedAt,
-            elapsedOverride: nil,
-            upVotes: 0,
-            downVotes: 0
+            elapsedOverride: nil
         )
         currentTrackIdentityToken = "icy:\(logicalKey)"
         updateNowPlaying()
+        scheduleEnrichment(channel: channel, artist: artist, title: title, sessionID: sessionID)
+    }
 
-        log.debug("ICY: stream title update '\(normalizedTitle, privacy: .public)'")
+    /// Merges the album name from songs/{id}.json into the current track.
+    /// One fetch ~5s after the ICY change (the feed lags the stream), one
+    /// retry at +20s — no continuous polling; ICY drives everything else.
+    private func scheduleEnrichment(channel: Channel, artist: String, title: String, sessionID: UUID) {
+        enrichmentTask?.cancel()
+        enrichmentTask = Task { [weak self] in
+            for delay in [5.0, 20.0] {
+                try? await Task.sleep(for: .seconds(delay))
+                guard let self, !Task.isCancelled, self.playbackSessionID == sessionID else { return }
+                guard let songs = try? await SomaClient.fetchRecentSongs(channelId: channel.id) else { continue }
+                guard !Task.isCancelled, self.playbackSessionID == sessionID else { return }
 
-        // Pull full metadata (duration/votes/art/started) as soon as stream title changes.
-        await fetchAndUpdateTrack(channelId: channelId, channelName: channelName, network: network)
+                let match = songs.first { song in
+                    TrackMatching.sameSong(
+                        artistA: song.artist ?? "", titleA: song.title ?? "",
+                        artistB: artist, titleB: title
+                    )
+                }
+                guard let match else { continue }
+                guard let track = self.currentTrack, track.artist == artist, track.title == title else { return }
+
+                let album = (match.album?.isEmpty == false) ? match.album : nil
+                self.currentTrack = NowPlaying(
+                    channelName: track.channelName,
+                    artist: track.artist,
+                    title: track.title,
+                    album: album,
+                    artURL: track.artURL,
+                    duration: track.duration,
+                    startedAt: track.startedAt,
+                    elapsedOverride: track.elapsedOverride
+                )
+                self.updateNowPlaying()
+                return
+            }
+        }
     }
 
     private func extractIcyStreamTitle(from item: AVMetadataItem) async -> String? {
@@ -853,50 +692,6 @@ final class AudioPlayer {
         return ("", streamTitle)
     }
 
-    private func logicalTrackKey(artist: String, title: String) -> String? {
-        let normalizedArtist = artist.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalizedArtist.isEmpty && normalizedTitle.isEmpty { return nil }
-        return "\(normalizedArtist)|\(normalizedTitle)"
-    }
-
-    private var currentLogicalTrackKey: String? {
-        guard let track = currentTrack else { return nil }
-        return logicalTrackKey(artist: track.artist, title: track.title)
-    }
-
-    private func currentElapsedSeconds(now: Date = Date()) -> Int {
-        currentTrack?.elapsedSeconds(at: now) ?? 0
-    }
-
-    private var apiTimeRemaining: Int? {
-        guard let apiTrackStartedAt, apiTrackDuration > 0 else { return nil }
-        let elapsed = Int(Date().timeIntervalSince(apiTrackStartedAt))
-        let remaining = apiTrackDuration - elapsed
-        return remaining > 0 ? remaining : nil
-    }
-
-    private func resolveTrackIdentity(item: TrackHistoryItem, artist: String, title: String) -> String {
-        if let trackId = item.trackId {
-            return "id:\(trackId)"
-        }
-
-        let normalizedArtist = artist.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-
-        if let started = item.started {
-            return "meta:\(normalizedArtist)|\(normalizedTitle)|\(started)"
-        }
-
-        return "meta:\(normalizedArtist)|\(normalizedTitle)"
-    }
-
-    private func loadArtImage(url: URL?) async -> NSImage? {
-        guard let url else { return nil }
-        let sized = URL(string: url.absoluteString + "?size=300x300") ?? url
-        return await ArtCache.image(for: sized)
-    }
-
     private func updateNowPlayingArtwork(image: NSImage?) async {
         guard let image else { return }
         let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
@@ -908,22 +703,18 @@ final class AudioPlayer {
 
 private final class StreamMetadataDelegate: NSObject, AVPlayerItemMetadataOutputPushDelegate {
     weak var owner: AudioPlayer?
-    let channelId: Int
-    let channelName: String
-    let network: Network
+    let channel: Channel
     let sessionID: UUID
 
-    init(owner: AudioPlayer, channelId: Int, channelName: String, network: Network, sessionID: UUID) {
+    init(owner: AudioPlayer, channel: Channel, sessionID: UUID) {
         self.owner = owner
-        self.channelId = channelId
-        self.channelName = channelName
-        self.network = network
+        self.channel = channel
         self.sessionID = sessionID
     }
 
     func metadataOutput(_ output: AVPlayerItemMetadataOutput, didOutputTimedMetadataGroups groups: [AVTimedMetadataGroup], from track: AVPlayerItemTrack?) {
         Task { [weak owner] in
-            await owner?.handleTimedMetadata(groups, channelId: channelId, channelName: channelName, network: network, sessionID: sessionID)
+            await owner?.handleTimedMetadata(groups, channel: channel, sessionID: sessionID)
         }
     }
 }

@@ -25,18 +25,56 @@ final class HistoryStoreTests: XCTestCase {
     }
 
     @discardableResult
-    private func openSegment(start: Date, trackId: Int? = 1) -> Int64 {
+    private func openSegment(start: Date) -> Int64 {
         store.openSegment(
             startedAt: start,
-            network: "di",
-            channelId: 7,
-            channelKey: "vocaltrance",
-            channelName: "Vocal Trance",
+            network: "somafm",
+            channelId: "groovesalad",
+            channelKey: "groovesalad",
+            channelName: "Groove Salad",
             artist: "Above & Beyond",
             title: "Sun & Moon",
-            trackId: trackId,
             artPath: nil
         )!
+    }
+
+    // MARK: - Votes (song_key keyed, local-only)
+
+    func testVoteRoundTrip() {
+        let key = "above & beyond|sun & moon"
+        store.setVote(
+            songKey: key, vote: 1,
+            artist: "Above & Beyond", title: "Sun & Moon",
+            network: "somafm", channelId: "groovesalad", channelName: "Groove Salad",
+            at: Date(timeIntervalSince1970: 1_000_000), artPath: nil
+        )
+        XCTAssertEqual(store.vote(forSongKey: key), 1)
+
+        let liked = store.voteEntries(vote: 1, limit: 10)
+        XCTAssertEqual(liked.count, 1)
+        XCTAssertEqual(liked[0].id, key)
+        XCTAssertEqual(liked[0].artist, "Above & Beyond")
+
+        store.clearVote(songKey: key)
+        XCTAssertNil(store.vote(forSongKey: key))
+        XCTAssertTrue(store.voteEntries(vote: 1, limit: 10).isEmpty)
+    }
+
+    func testVoteJoinsIntoRecentListens() {
+        let key = "above & beyond|sun & moon"
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        let id = openSegment(start: start)
+        store.close(id: id, at: start.addingTimeInterval(120), reason: .trackChange)
+        store.setVote(
+            songKey: key, vote: -1,
+            artist: "Above & Beyond", title: "Sun & Moon",
+            network: "somafm", channelId: "groovesalad", channelName: "Groove Salad",
+            at: start, artPath: nil
+        )
+
+        let listens = store.recentListens(limit: 10)
+        XCTAssertEqual(listens.count, 1)
+        XCTAssertEqual(listens[0].vote, -1)
     }
 
     func testOpenCloseRoundTrip() {
@@ -49,7 +87,7 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertEqual(listens[0].id, id)
         XCTAssertEqual(listens[0].duration, 120, accuracy: 0.001)
         XCTAssertEqual(listens[0].artist, "Above & Beyond")
-        XCTAssertEqual(listens[0].channelName, "Vocal Trance")
+        XCTAssertEqual(listens[0].channelName, "Groove Salad")
     }
 
     func testListenedSecondsCountsOpenSegmentToHeartbeat() {

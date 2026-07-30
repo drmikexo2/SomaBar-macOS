@@ -32,6 +32,15 @@ enum TrackMatching {
         return a == b || extendsAtWordBoundary(a, beyond: b) || extendsAtWordBoundary(b, beyond: a)
     }
 
+    /// Stable identity for a song with no track id: normalized
+    /// "artist|title". Keys the local votes table.
+    static func songKey(artist: String, title: String) -> String? {
+        let normalizedArtist = artist.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalizedArtist.isEmpty && normalizedTitle.isEmpty { return nil }
+        return "\(normalizedArtist)|\(normalizedTitle)"
+    }
+
     private static func extendsAtWordBoundary(_ longer: String, beyond shorter: String) -> Bool {
         guard longer.count > shorter.count, longer.hasPrefix(shorter) else { return false }
         let next = longer[longer.index(longer.startIndex, offsetBy: shorter.count)]

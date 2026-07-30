@@ -13,15 +13,13 @@ final class HotkeyManager {
         case playPause = 1
         case nextFavorite = 2
         case previousFavorite = 3
-        case nextSite = 4
-        case previousSite = 5
     }
 
     var onAction: ((Action) -> Void)?
 
     private var hotKeyRefs: [EventHotKeyRef] = []
     private var eventHandlerRef: EventHandlerRef?
-    private static let signature: OSType = 0x4449_4252 // "DIBR"
+    private static let signature: OSType = 0x534D_4252 // "SMBR"
 
     func setEnabled(_ enabled: Bool) {
         if enabled { register() } else { unregister() }
@@ -73,8 +71,6 @@ final class HotkeyManager {
         registerKey(.playPause, keyCode: UInt32(kVK_ANSI_P), modifiers: modifiers)
         registerKey(.nextFavorite, keyCode: UInt32(kVK_RightArrow), modifiers: modifiers)
         registerKey(.previousFavorite, keyCode: UInt32(kVK_LeftArrow), modifiers: modifiers)
-        registerKey(.previousSite, keyCode: UInt32(kVK_UpArrow), modifiers: modifiers)
-        registerKey(.nextSite, keyCode: UInt32(kVK_DownArrow), modifiers: modifiers)
     }
 
     private func registerKey(_ action: Action, keyCode: UInt32, modifiers: UInt32) {

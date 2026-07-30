@@ -112,7 +112,7 @@ struct HistoryWindowView: View {
                     .font(.system(size: 12))
                     .lineLimit(1)
                     .help(songLine(artist: entry.artist, title: entry.title))
-                Text("\(entry.channelName) · \(siteName(entry.network))")
+                Text(entry.channelName)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -149,7 +149,7 @@ struct HistoryWindowView: View {
                     .font(.system(size: 12))
                     .lineLimit(1)
                     .help(songLine(artist: entry.artist, title: entry.title))
-                Text("\(entry.channelName) · \(siteName(entry.network))")
+                Text(entry.channelName)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -166,10 +166,9 @@ struct HistoryWindowView: View {
         .songActionsMenu(artist: entry.artist, title: entry.title)
     }
 
-    /// 26pt cover art with a music-note placeholder for pre-v4 rows and
-    /// ICY-only listens that never got art from the API.
+    /// 26pt channel logo with a music-note placeholder for rows without art.
     private func artThumbnail(_ url: URL?) -> some View {
-        CachedArtImage(url: TrackArt.thumbnailURL(url, pixelSize: 64)) {
+        CachedArtImage(url: url) {
             ZStack {
                 RoundedRectangle(cornerRadius: 4, style: .continuous)
                     .fill(.quaternary.opacity(0.5))
@@ -245,10 +244,6 @@ struct HistoryWindowView: View {
 
     private func songLine(artist: String, title: String) -> String {
         TrackDisplay.artistTitle(artist, title)
-    }
-
-    private func siteName(_ raw: String) -> String {
-        Network(rawValue: raw)?.displayName ?? raw
     }
 
     private static func formatTime(_ seconds: TimeInterval) -> String {
