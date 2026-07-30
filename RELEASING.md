@@ -18,7 +18,7 @@ The script does everything below in order and stops on the first failure.
 ## Prerequisites (one-time per machine)
 
 - `gh` authenticated against github.com/drmikexo2/SomaBar-macOS.
-- Notarization keychain profile named `SomaBar` (`xcrun notarytool store-credentials`).
+- Notarization keychain profile named `DIBar` (`xcrun notarytool store-credentials`; shared with DIBar - same Apple ID and team).
 - The Sparkle EdDSA private key at `~/.somabar/sparkle_private_key`
   (override with `SPARKLE_ED_KEY_FILE`). This key signs every update:
   it must never change, must never be committed, and losing it means shipped

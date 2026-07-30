@@ -13,7 +13,7 @@ set -euo pipefail
 REPO="drmikexo2/SomaBar-macOS"
 FEED_RAW_URL="https://raw.githubusercontent.com/${REPO}/main/appcast.xml"
 ED_KEY_FILE="${SPARKLE_ED_KEY_FILE:-$HOME/.somabar/sparkle_private_key}"
-NOTARY_PROFILE="SomaBar"
+NOTARY_PROFILE="DIBar"
 TEAM_ID="FA2AMFV98N"
 
 cd "$(dirname "$0")/.."

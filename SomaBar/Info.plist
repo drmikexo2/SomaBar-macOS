@@ -25,14 +25,14 @@
 	<key>NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac</key>
 	<true/>
 	<key>SUEnableAutomaticChecks</key>
-	<false/>
+	<true/>
 	<key>SUAutomaticallyUpdate</key>
 	<true/>
 	<key>SUEnableInstallerLauncherService</key>
 	<true/>
 	<key>SUFeedURL</key>
-	<string></string>
+	<string>https://raw.githubusercontent.com/drmikexo2/SomaBar-macOS/main/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string></string>
+	<string>fB3B+dXoBnCVYB7qy4u9lSz19gHSIrqCe/jXRSj211w=</string>
 </dict>
 </plist>
