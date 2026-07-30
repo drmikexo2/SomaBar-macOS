@@ -1,92 +1,54 @@
 # SomaBar
 
-**A native macOS menu bar app for [DI.FM](https://di.fm) and the whole AudioAddict radio family**: JazzRadio, RadioTunes, ClassicalRadio, RockRadio, and ZenRadio. Built entirely in Swift. No Electron, no Chromium, no web views. It sits quietly in your menu bar using virtually zero CPU when idle and a few MB of RAM.
+A macOS menu bar app for listening to [SomaFM](https://somafm.com) internet radio.
 
-<img width="352" height="498" alt="image" src="https://github.com/user-attachments/assets/4dc191c8-cb75-4be8-9adc-f68821eca365" /><br>
-<img width="485" height="455" alt="image" src="https://github.com/user-attachments/assets/fba18cf4-4e8e-4660-ae8b-01be692b962e" /><br>
-<img width="357" height="294" alt="image" src="https://github.com/user-attachments/assets/4151fc93-856f-4134-a8da-7940f0bd196e" />
-
+SomaBar lives in the menu bar: pick any of SomaFM's ~46 channels, see what's playing at a glance, and control playback without switching apps. Built entirely in Swift — no Electron, no web views. It is a port of [DIBar](https://github.com/drmikexo2/DIBar-macOS) (a di.fm menu bar player) to SomaFM.
 
 ## Features
 
-### Listen
+- **All SomaFM channels** with instant search, favorites, and a recently-played list
+- **Now playing in the menu bar** — artist and song rendered right in the status item, with a play-state glyph (each component can be toggled off)
+- **Four stream qualities** — MP3 highest (up to 320k), AAC 128k, AAC+ 64k, AAC+ 32k
+- **Self-healing playback** — automatic failover across SomaFM's redundant stream servers, reconnect with backoff, and recovery after sleep or network loss
+- **Global hotkeys** (⌃⌥⌘ P / ← / →) and media-key support with macOS Now Playing integration
+- **Track-change and channel-switch notifications** with channel artwork
+- **Listening history** — local SQLite log with daily/all-time totals, liked/disliked songs, and a stats.fm-compatible `endsong.json` export
+- **Last.fm scrobbling** (also feeds Airbuds) with an offline queue
+- **Local song ratings** — thumbs up/down, kept on your Mac (SomaFM has no accounts)
+- **Sleep timer**, output-device picker with AirPlay, launch at login, Sparkle auto-updates
 
-- **Six radio sites, one app**: switch between DI.FM, JazzRadio, RadioTunes, ClassicalRadio, RockRadio, and ZenRadio. One premium account covers them all.
-- **All Sites view**: merge every network into a single list and search hundreds of channels at once. Each row shows which site it belongs to.
-- **Instant search** with full keyboard control: type to filter, arrows and Return to play.
-- **Favorites**: star channels right in the app, synced with your DI.FM account, pinned to the top of the list. Works across sites in the All Sites view.
-- **Recently played**: the last channels you played across all sites, one click to jump back.
-- **Like / dislike songs**: vote on the current track with instant feedback. Votes count on DI.FM like the website's buttons.
-- **Now playing**: album art, artist, title, elapsed time, duration, and community votes. Click the art to expand it.
-- **Song actions**: copy artist and title, or search the current song on Spotify, Apple Music, and YouTube.
-- **Stream quality selection**: 320k MP3, 128k AAC, or 64k AAC.
-- **Self-healing streams**: network drops, stalls, and sleep/wake trigger an automatic reconnect with visible Buffering and Reconnecting states.
-- **Remembers your channel**: resumes the last channel per site on launch.
+## Support SomaFM
 
-### Control it from anywhere
+SomaFM is commercial-free and 100% listener-supported. If you listen through SomaBar, please [support SomaFM directly](https://somafm.com/support/).
 
-- **Global shortcuts** that work in any app: play/pause, previous/next favorite channel, previous/next site.
-- **Media keys**: play/pause, and the seek keys step through your favorites. Integrates with macOS Now Playing.
-- **Switch notifications**: changing channels from the keyboard pops a banner with the site, channel, and current song. A separate opt-in banner announces every track change, artwork included.
-- **Sleep timer**: 15, 30, 60, or 90 minutes, or type your own, with a live countdown. Optionally quits the app instead of just pausing.
-- **Output device picker**: play through any audio device, AirPlay included, independent of the system default. The route survives reconnects.
-- **Mute button** with an unmissable muted state in both the player and the menu bar.
+## A note on the SomaFM API
 
-### Scrobbling
+SomaFM no longer offers a public third-party API. SomaBar uses their openly reachable endpoints (`channels.json`, the published `.pls` playlists, and the per-channel song feeds) as a polite guest:
 
-- **Last.fm**: SomaBar scrobbles what you actually heard, at least half the song or four minutes of it, with ads and jingles filtered out. Scrobbles queue locally through offline stretches and send when you are back.
-- Anything that reads Last.fm, like Airbuds, picks up your radio listening automatically.
+- every request carries an identifying `User-Agent`
+- the channel list and song feeds are fetched conditionally and infrequently — the ICY stream metadata the player already receives drives the now-playing display
+- streams use SomaFM's official playlist URLs, never hardcoded server addresses
 
-### Your listening, remembered (locally)
+If SomaFM changes or restricts these endpoints, the app will need updating.
 
-- **Listening history**: every song you hear is saved to a local SQLite database on your Mac. Nothing is sent anywhere. Browse it in the History window with Listened, Liked, and Disliked tabs, album art on every row.
-- **Listening stats**: today and all-time totals, with liked songs highlighted.
-- **stats.fm export**: export your history as a Spotify-format endsong.json for import into stats.fm.
-- Optional: one checkbox turns history off.
+## Building
 
-### Menu bar, your way
+Requires macOS 14+ and Xcode 15+.
 
-- **Configurable menu bar text**: show any combination of play state, site, channel, artist, and song next to the icon, up to two compact lines, with a live preview in Settings.
-- **Icon-only mode** for minimalists (the default).
-- **Launch at login**, membership status and signed-in account at a glance, clear error messages when a stream misbehaves.
-
-## Why native?
-
-| | SomaBar | Typical Electron app |
-|---|---|---|
-| **App size** | ~2 MB | 150-300 MB |
-| **RAM at idle** | ~15 MB | 200-500 MB |
-| **CPU at idle** | 0% | 0.5-2% |
-| **Startup** | Instant | 2-5 seconds |
-
-SomaBar uses `AVPlayer` for audio, `MPRemoteCommandCenter` for media keys, a hand-managed `NSStatusItem` with a SwiftUI panel for the interface, and the system SQLite for history. No runtime overhead from bundled browsers, and a single third-party dependency: [Sparkle](https://sparkle-project.org), the standard open-source updater for Mac apps.
-
-## Requirements
-
-- macOS 14.0 (Sonoma) or later
-- A [DI.FM](https://di.fm) premium membership for high-quality streaming (works across all six sites)
-
-## Download
-
-- Latest release: <https://github.com/drmikexo2/SomaBar-macOS/releases/latest>
-
-Releases are Developer ID signed and notarized by Apple, so there are no Gatekeeper hoops. Unzip, drag `SomaBar.app` to Applications, and launch.
-
-SomaBar checks for new versions once a day and offers one-click updates (via Sparkle, verified against the release's EdDSA signature). You can also check manually from Settings.
-
-## Build From Source
-
-```bash
-git clone https://github.com/drmikexo2/SomaBar-macOS.git
-cd SomaBar-macOS
+```sh
 cp SomaBar/Services/Secrets.swift.example SomaBar/Services/Secrets.swift
-xcodebuild -project SomaBar.xcodeproj -scheme SomaBar -configuration Release build
+# optional: paste your Last.fm API key/secret into Secrets.swift for scrobbling
+xcodebuild -project SomaBar.xcodeproj -scheme SomaBar -destination 'platform=macOS' build
 ```
 
-Last.fm scrobbling needs your own API key and secret in `Secrets.swift`; everything else works without it.
+The app builds and runs fine with empty secrets — the Last.fm row in Settings simply shows that a key is required.
 
-Maintainers: releases must follow [RELEASING.md](RELEASING.md) (`scripts/release.sh <version>`), or auto-update clients will never see them.
+## Tests
 
-## Privacy
+```sh
+xcodebuild -project SomaBar.xcodeproj -scheme SomaBar -destination 'platform=macOS' test
+```
 
-Your DI.FM login is exchanged only with DI.FM's own API. Listening history and song votes are stored in a local database on your Mac and never leave it. Scrobbling is off until you connect an account.
+## Releasing
+
+See [RELEASING.md](RELEASING.md).
