@@ -173,7 +173,7 @@ struct PlayerControlsView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
                     .monospacedDigit()
-                    .help("The actual stream being played. On the Best setting this is 256–320k MP3 where the station offers it and 128k AAC otherwise.")
+                    .help("The actual stream being played. On the High setting this is 256k+ MP3 where the station offers it and 128k AAC otherwise.")
             }
         }
     }

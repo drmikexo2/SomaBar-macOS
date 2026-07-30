@@ -37,7 +37,7 @@ struct SettingsWindowView: View {
             settingsRow("Quality") {
                 qualityMenu
             }
-            .help("Best picks the highest-fidelity stream per station: 256–320k MP3 where SomaFM offers it, 128k AAC otherwise. The player shows the actual bitrate next to the station name.")
+            .help("High picks the highest-fidelity stream per station: 256k+ MP3 where SomaFM offers it, 128k AAC otherwise. The player shows the actual bitrate next to the station name.")
 
             Divider()
 

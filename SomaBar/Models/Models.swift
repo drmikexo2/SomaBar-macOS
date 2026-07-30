@@ -28,18 +28,18 @@ enum StreamQuality: String, CaseIterable, Identifiable, Codable {
     /// Menu item label.
     var menuTitle: String {
         switch self {
-        case .best: "Best: 256–320k MP3 where offered, 128k AAC otherwise"
-        case .aacHighest: "128k AAC (every station)"
-        case .aacpHigh: "64k AAC+ (data saver)"
+        case .best: "High: 256k+ MP3 where available; otherwise 128k AAC"
+        case .aacHighest: "Medium: 128k AAC"
+        case .aacpHigh: "Data saver: 64k AAC"
         }
     }
 
     /// Collapsed picker label.
     var shortTitle: String {
         switch self {
-        case .best: "Best"
-        case .aacHighest: "128k AAC"
-        case .aacpHigh: "64k AAC+"
+        case .best: "High"
+        case .aacHighest: "Medium"
+        case .aacpHigh: "Data saver"
         }
     }
 
