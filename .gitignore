@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Xcode user state
+xcuserdata/
+*.xcuserstate
+
+# Build products and local artifacts
+build/
+DerivedData/
+*.app/
+dist/
+*.zip
+*.zip.sha256
+SomaBar 20*/
+
+# SwiftPM
+.build/
+
+# Local tooling
+.codex/
+.claude/
+
+# Local credentials (copy Secrets.swift.example)
+SomaBar/Services/Secrets.swift
