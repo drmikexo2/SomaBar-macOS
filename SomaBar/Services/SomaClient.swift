@@ -95,8 +95,34 @@ enum SomaClient {
     /// verbatim (the numeric filename suffixes aren't derivable from the
     /// channel id), and is forced to https — an http .pls returns http
     /// stream entries, which ATS would then block.
+    ///
+    /// `.best` resolves the mp3 tier first and keeps it only when it's the
+    /// genuine high-bitrate stream; otherwise it re-resolves to 128k AAC —
+    /// 128k MP3 is never served (worse than 128k AAC at the same bits).
     static func resolveStream(channel: Channel, quality: StreamQuality) async throws -> ResolvedStream {
-        guard let playlist = pickPlaylist(from: channel.playlists, quality: quality),
+        if quality == .best {
+            if let mp3 = try? await resolveTier(channel: channel, tier: ("mp3", "highest")),
+               bestPrefersMP3(mp3.streamInfo) {
+                return mp3
+            }
+            return try await resolveTier(channel: channel, tier: ("aac", "highest"))
+        }
+        guard let tier = quality.tier else { throw SomaClientError.invalidURL }
+        return try await resolveTier(channel: channel, tier: tier)
+    }
+
+    /// Whether the resolved mp3 tier is worth playing under `.best`: only
+    /// the genuine 256/320k streams qualify. 128k, unparseable, or non-MP3
+    /// all fall back to the known-good 128k AAC.
+    static func bestPrefersMP3(_ info: ResolvedStream.StreamInfo?) -> Bool {
+        guard let info else { return false }
+        return info.codec == "MP3" && info.kbps >= 192
+    }
+
+    private static func resolveTier(
+        channel: Channel, tier: (format: String, quality: String)
+    ) async throws -> ResolvedStream {
+        guard let playlist = pickPlaylist(from: channel.playlists, tier: tier),
               let playlistURL = httpsURL(from: playlist.url)
         else { throw SomaClientError.invalidURL }
 
@@ -111,13 +137,17 @@ enum SomaClient {
     }
 
     /// First playlist matching the requested tier, else the nearest tier in
-    /// declaration order (highest first), else the feed's first entry.
-    static func pickPlaylist(from playlists: [Channel.Playlist], quality: StreamQuality) -> Channel.Playlist? {
-        if let exact = playlists.first(where: { quality.matches($0) }) {
-            return exact
-        }
-        for fallback in StreamQuality.allCases {
-            if let match = playlists.first(where: { fallback.matches($0) }) {
+    /// preference order, else the feed's first entry.
+    static func pickPlaylist(
+        from playlists: [Channel.Playlist], tier: (format: String, quality: String)
+    ) -> Channel.Playlist? {
+        let ladder: [(format: String, quality: String)] = [
+            tier, ("aac", "highest"), ("aacp", "high"), ("mp3", "highest"),
+        ]
+        for candidate in ladder {
+            if let match = playlists.first(where: {
+                $0.format == candidate.format && $0.quality == candidate.quality
+            }) {
                 return match
             }
         }

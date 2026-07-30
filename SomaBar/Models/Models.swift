@@ -2,44 +2,55 @@ import Foundation
 
 // MARK: - Stream Quality
 
-/// SomaFM publishes exactly four playlist tiers per channel, identified by
-/// (format, quality) pairs in channels.json. The mp3 bitrate varies per
-/// channel (128-320k); the aac tiers are uniform.
+/// The quality setting is intent-based, not a raw SomaFM tier. SomaFM's mp3
+/// "highest" tier varies per channel (128k on most, 256/320k on flagships)
+/// and 128k MP3 is strictly worse than 128k AAC — so `.best` resolves
+/// per-channel to the high-bitrate MP3 where it exists and 128k AAC
+/// otherwise, and no setting can ever land on 128k MP3.
 enum StreamQuality: String, CaseIterable, Identifiable, Codable {
-    case mp3Highest = "mp3_highest"
+    case best
     case aacHighest = "aac_highest"
     case aacpHigh = "aacp_high"
-    case aacpLow = "aacp_low"
 
     var id: String { rawValue }
 
-    var displayName: String {
+    /// Stored-pref reader with legacy migration: earlier builds stored the
+    /// raw tiers "mp3_highest" (now the auto mode) and "aacp_low" (dropped).
+    static func fromStored(_ raw: String?) -> StreamQuality? {
+        guard let raw else { return nil }
+        switch raw {
+        case "mp3_highest": return .best
+        case "aacp_low": return .aacpHigh
+        default: return StreamQuality(rawValue: raw)
+        }
+    }
+
+    /// Menu item label.
+    var menuTitle: String {
         switch self {
-        case .mp3Highest: "MP3 128–320k (varies by channel)"
+        case .best: "Best: 256–320k MP3 where offered, 128k AAC otherwise"
+        case .aacHighest: "128k AAC (every station)"
+        case .aacpHigh: "64k AAC+ (data saver)"
+        }
+    }
+
+    /// Collapsed picker label.
+    var shortTitle: String {
+        switch self {
+        case .best: "Best"
         case .aacHighest: "128k AAC"
         case .aacpHigh: "64k AAC+"
-        case .aacpLow: "32k AAC+"
         }
     }
 
-    var format: String {
+    /// The concrete channels.json playlist tier, nil for the auto mode
+    /// (which decides after resolving what the mp3 tier actually serves).
+    var tier: (format: String, quality: String)? {
         switch self {
-        case .mp3Highest: "mp3"
-        case .aacHighest: "aac"
-        case .aacpHigh, .aacpLow: "aacp"
+        case .best: nil
+        case .aacHighest: ("aac", "highest")
+        case .aacpHigh: ("aacp", "high")
         }
-    }
-
-    var quality: String {
-        switch self {
-        case .mp3Highest, .aacHighest: "highest"
-        case .aacpHigh: "high"
-        case .aacpLow: "low"
-        }
-    }
-
-    func matches(_ playlist: Channel.Playlist) -> Bool {
-        playlist.format == format && playlist.quality == quality
     }
 }
 

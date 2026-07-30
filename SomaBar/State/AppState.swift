@@ -145,7 +145,7 @@ final class AppState {
 
     // Settings
     var selectedQuality: StreamQuality =
-        Prefs.string(.quality).flatMap(StreamQuality.init(rawValue:)) ?? .aacHighest
+        StreamQuality.fromStored(Prefs.string(.quality)) ?? .best
 
     // UI
     var isLoading: Bool = false

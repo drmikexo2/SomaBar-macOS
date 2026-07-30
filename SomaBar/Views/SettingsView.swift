@@ -37,6 +37,7 @@ struct SettingsWindowView: View {
             settingsRow("Quality") {
                 qualityMenu
             }
+            .help("Best picks the highest-fidelity stream per station: 256–320k MP3 where SomaFM offers it, 128k AAC otherwise. The player shows the actual bitrate next to the station name.")
 
             Divider()
 
@@ -293,12 +294,12 @@ struct SettingsWindowView: View {
                     // Every item reserves the checkmark slot so names align
                     let check = Text("\(Image(systemName: "checkmark"))")
                         .foregroundStyle(quality == appState.selectedQuality ? AnyShapeStyle(.primary) : AnyShapeStyle(.clear))
-                    Text("\(check) \(quality.displayName)")
+                    Text("\(check) \(quality.menuTitle)")
                 }
             }
         } label: {
             HStack(spacing: 4) {
-                Text(appState.selectedQuality.displayName)
+                Text(appState.selectedQuality.shortTitle)
                     .font(.system(size: 11))
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.system(size: 8, weight: .semibold))

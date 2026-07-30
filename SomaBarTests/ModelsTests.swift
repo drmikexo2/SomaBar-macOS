@@ -142,17 +142,24 @@ final class ModelsTests: XCTestCase {
 
     // MARK: - StreamQuality
 
-    func testStreamQualityMatchesPlaylists() {
-        let mp3 = Channel.Playlist(url: "https://api.somafm.com/x256.pls", format: "mp3", quality: "highest")
-        let aac = Channel.Playlist(url: "https://api.somafm.com/x130.pls", format: "aac", quality: "highest")
-        let aacpHigh = Channel.Playlist(url: "https://api.somafm.com/x64.pls", format: "aacp", quality: "high")
-        let aacpLow = Channel.Playlist(url: "https://api.somafm.com/x32.pls", format: "aacp", quality: "low")
+    func testStreamQualityTierMapping() {
+        XCTAssertNil(StreamQuality.best.tier)
+        XCTAssertEqual(StreamQuality.aacHighest.tier?.format, "aac")
+        XCTAssertEqual(StreamQuality.aacHighest.tier?.quality, "highest")
+        XCTAssertEqual(StreamQuality.aacpHigh.tier?.format, "aacp")
+        XCTAssertEqual(StreamQuality.aacpHigh.tier?.quality, "high")
+    }
 
-        XCTAssertTrue(StreamQuality.mp3Highest.matches(mp3))
-        XCTAssertTrue(StreamQuality.aacHighest.matches(aac))
-        XCTAssertTrue(StreamQuality.aacpHigh.matches(aacpHigh))
-        XCTAssertTrue(StreamQuality.aacpLow.matches(aacpLow))
-        XCTAssertFalse(StreamQuality.mp3Highest.matches(aac))
-        XCTAssertFalse(StreamQuality.aacHighest.matches(aacpHigh))
+    func testStreamQualityFromStoredMigratesLegacyValues() {
+        // Old builds stored raw SomaFM tiers.
+        XCTAssertEqual(StreamQuality.fromStored("mp3_highest"), .best)
+        XCTAssertEqual(StreamQuality.fromStored("aacp_low"), .aacpHigh)
+        // Current values pass through.
+        XCTAssertEqual(StreamQuality.fromStored("best"), .best)
+        XCTAssertEqual(StreamQuality.fromStored("aac_highest"), .aacHighest)
+        XCTAssertEqual(StreamQuality.fromStored("aacp_high"), .aacpHigh)
+        // Unknown/missing yields nil so callers apply the default.
+        XCTAssertNil(StreamQuality.fromStored("premium_high"))
+        XCTAssertNil(StreamQuality.fromStored(nil))
     }
 }

@@ -80,20 +80,26 @@ final class SomaClientTests: XCTestCase {
 
     func testPickPlaylistExactMatch() {
         XCTAssertEqual(
-            SomaClient.pickPlaylist(from: fullPlaylists, quality: .aacHighest)?.url,
+            SomaClient.pickPlaylist(from: fullPlaylists, tier: ("aac", "highest"))?.url,
             "https://api.somafm.com/x130.pls"
         )
         XCTAssertEqual(
-            SomaClient.pickPlaylist(from: fullPlaylists, quality: .mp3Highest)?.url,
+            SomaClient.pickPlaylist(from: fullPlaylists, tier: ("mp3", "highest"))?.url,
             "https://api.somafm.com/x256.pls"
         )
     }
 
-    func testPickPlaylistFallsBackDownTheTiers() {
-        // Only the low tier exists — any requested quality lands on it.
+    func testPickPlaylistFallsBackDownTheLadder() {
+        // Requested tier missing — lands on the aac tier first.
+        let noMP3 = Array(fullPlaylists[1...])
+        XCTAssertEqual(
+            SomaClient.pickPlaylist(from: noMP3, tier: ("mp3", "highest"))?.url,
+            "https://api.somafm.com/x130.pls"
+        )
+        // Only the low tier exists — first-entry fallback.
         let lowOnly = [fullPlaylists[3]]
         XCTAssertEqual(
-            SomaClient.pickPlaylist(from: lowOnly, quality: .mp3Highest)?.url,
+            SomaClient.pickPlaylist(from: lowOnly, tier: ("mp3", "highest"))?.url,
             "https://api.somafm.com/x32.pls"
         )
     }
@@ -101,13 +107,26 @@ final class SomaClientTests: XCTestCase {
     func testPickPlaylistUnknownTiersFallBackToFirstEntry() {
         let exotic = [Channel.Playlist(url: "https://api.somafm.com/x.pls", format: "ogg", quality: "best")]
         XCTAssertEqual(
-            SomaClient.pickPlaylist(from: exotic, quality: .aacHighest)?.url,
+            SomaClient.pickPlaylist(from: exotic, tier: ("aac", "highest"))?.url,
             "https://api.somafm.com/x.pls"
         )
     }
 
     func testPickPlaylistEmptyIsNil() {
-        XCTAssertNil(SomaClient.pickPlaylist(from: [], quality: .aacHighest))
+        XCTAssertNil(SomaClient.pickPlaylist(from: [], tier: ("aac", "highest")))
+    }
+
+    // MARK: - Best-mode tier decision
+
+    func testBestPrefersMP3OnlyForGenuineHighBitrate() {
+        // The 256/320k flagship streams qualify.
+        XCTAssertTrue(SomaClient.bestPrefersMP3(.init(kbps: 256, codec: "MP3")))
+        XCTAssertTrue(SomaClient.bestPrefersMP3(.init(kbps: 320, codec: "MP3")))
+        // 128k MP3 must never be served — fall back to 128k AAC.
+        XCTAssertFalse(SomaClient.bestPrefersMP3(.init(kbps: 128, codec: "MP3")))
+        // Non-MP3 or unparseable resolutions also fall back.
+        XCTAssertFalse(SomaClient.bestPrefersMP3(.init(kbps: 256, codec: "AAC")))
+        XCTAssertFalse(SomaClient.bestPrefersMP3(nil))
     }
 
     // MARK: - StreamInfo parsing
